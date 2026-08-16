@@ -5,6 +5,35 @@ export function auctionList(s: SessionState): AuctionRecord[] {
   return Array.from(s.auctions.values()).sort((a, b) => (a.startTs || 0) - (b.startTs || 0));
 }
 
+/** True if this auction requested or received anything for `code`. */
+export function auctionIncludesAdUnit(a: AuctionRecord, code: string): boolean {
+  if (!code) return false;
+  if (a.adUnitCodes.includes(code)) return true;
+  const bags = [a.bidsReceived, a.noBids, a.bidsRejected, a.winningBids];
+  for (const bag of bags) {
+    for (const bid of bag as any[]) {
+      if (bid?.adUnitCode === code) return true;
+    }
+  }
+  for (const br of a.bidderRequests as any[]) {
+    for (const bid of br?.bids || []) {
+      if (bid?.adUnitCode === code) return true;
+    }
+  }
+  return false;
+}
+
+export function auctionsForAdUnit(auctions: AuctionRecord[], code: string): AuctionRecord[] {
+  if (!code) return auctions;
+  return auctions.filter((a) => auctionIncludesAdUnit(a, code));
+}
+
+/** Most recent auction that includes this ad unit, if any. */
+export function latestAuctionForAdUnit(auctions: AuctionRecord[], code: string): AuctionRecord | undefined {
+  const matches = auctionsForAdUnit(auctions, code);
+  return matches.length ? matches[matches.length - 1] : undefined;
+}
+
 function sizeStr(b: any): string | undefined {
   if (b?.size) return String(b.size);
   if (b?.width && b?.height) return `${b.width}x${b.height}`;
@@ -83,19 +112,26 @@ export function bidRowsForAuction(s: SessionState, auctionId: string): BidRow[] 
   for (const rj of a.bidsRejected as any[]) {
     const bidder = rj?.bidderCode || rj?.bidder;
     const code = rj?.adUnitCode;
+    const existing = rows.get(key(code, bidder));
     rows.set(key(code, bidder), {
+      ...existing,
       auctionId,
       adUnitCode: code,
       bidder,
-      cpm: rj?.cpm,
-      currency: rj?.currency,
+      cpm: rj?.cpm ?? existing?.cpm,
+      originalCpm: rj?.originalCpm ?? existing?.originalCpm,
+      currency: rj?.currency ?? existing?.currency,
+      size: sizeStr(rj) || existing?.size,
+      mediaType: rj?.mediaType || existing?.mediaType,
       outcome: 'rejected',
-      rejectionReason: rj?.rejectionReason || rj?.statusMessage,
+      rejectionReason: pickRejectionReason(rj) || existing?.rejectionReason,
+      adId: rj?.adId || existing?.adId,
+      requestId: rj?.requestId || existing?.requestId,
       raw: rj,
     });
   }
 
-  // Enrich with timeout / error events from the raw log for this auction.
+  // Enrich with timeout / error / rejected events from the raw log for this auction.
   for (const env of s.envelopes) {
     if (env.channel !== 'prebid' || env.kind !== 'event') continue;
     if (env.auctionId && env.auctionId !== auctionId) continue;
@@ -109,12 +145,50 @@ export function bidRowsForAuction(s: SessionState, auctionId: string): BidRow[] 
           rows.set(k, { auctionId, adUnitCode: t?.adUnitCode, bidder: t?.bidderCode || t?.bidder, outcome: 'timeout' });
         }
       }
+    } else if (env.name === 'bidRejected') {
+      const bidder = p?.bidderCode || p?.bidder;
+      const code = p?.adUnitCode;
+      const k = key(code, bidder);
+      const existing = rows.get(k);
+      rows.set(k, {
+        ...existing,
+        auctionId,
+        adUnitCode: code,
+        bidder,
+        cpm: p?.cpm ?? existing?.cpm,
+        originalCpm: p?.originalCpm ?? existing?.originalCpm,
+        currency: p?.currency ?? existing?.currency,
+        size: sizeStr(p) || existing?.size,
+        mediaType: p?.mediaType || existing?.mediaType,
+        status: p?.status || existing?.status,
+        outcome: 'rejected',
+        rejectionReason: pickRejectionReason(p) || existing?.rejectionReason,
+        adId: p?.adId || existing?.adId,
+        requestId: p?.requestId || existing?.requestId,
+        meta: p?.meta || existing?.meta,
+        raw: p || existing?.raw,
+      });
     } else if (env.name === 'bidderError') {
       const req = p?.bidderRequest;
       const bidder = req?.bidderCode || p?.bidder;
-      for (const bid of req?.bids || [{ adUnitCode: undefined }]) {
+      const reason = formatBidderError(p?.error);
+      for (const bid of req?.bids || [{ adUnitCode: env.adUnitCode }]) {
         const k = key(bid?.adUnitCode, bidder);
-        rows.set(k, { auctionId, adUnitCode: bid?.adUnitCode, bidder, outcome: 'error' });
+        const existing = rows.get(k);
+        // A later HTTP error should not hide a bid that already arrived / was rejected.
+        if (existing && (existing.outcome === 'won' || existing.outcome === 'bid' || existing.outcome === 'rejected')) {
+          if (!existing.rejectionReason) existing.rejectionReason = reason;
+          continue;
+        }
+        rows.set(k, {
+          ...existing,
+          auctionId,
+          adUnitCode: bid?.adUnitCode,
+          bidder,
+          outcome: 'error',
+          rejectionReason: reason || existing?.rejectionReason,
+          raw: existing?.raw || p,
+        });
       }
     }
   }
@@ -123,6 +197,38 @@ export function bidRowsForAuction(s: SessionState, auctionId: string): BidRow[] 
     if ((x.adUnitCode || '') !== (y.adUnitCode || '')) return (x.adUnitCode || '').localeCompare(y.adUnitCode || '');
     return (y.cpm || 0) - (x.cpm || 0);
   });
+}
+
+function pickRejectionReason(bid: any): string | undefined {
+  return (
+    bid?.rejectionReason ||
+    bid?.statusMessage ||
+    bid?.reason ||
+    (typeof bid?.status === 'string' && bid.status !== 'bidRejected' ? bid.status : undefined)
+  );
+}
+
+function formatBidderError(error: unknown): string {
+  if (!error) return 'bidder HTTP error';
+  if (typeof error === 'string') return error;
+  if (typeof error !== 'object') return String(error);
+  const e = error as Record<string, unknown>;
+  const parts = [
+    e.status != null ? `HTTP ${e.status}` : '',
+    e.statusText,
+    e.message,
+    e.reason,
+    e.statusMessage,
+  ]
+    .map((p) => (p == null ? '' : String(p)))
+    .filter(Boolean);
+  if (parts.length) return parts.join(' — ');
+  try {
+    const s = JSON.stringify(error);
+    return s.length > 200 ? s.slice(0, 200) + '…' : s;
+  } catch {
+    return 'bidder HTTP error';
+  }
 }
 
 /** Correlation between Prebid ad unit codes and GPT slot element ids (FR7). */

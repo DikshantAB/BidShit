@@ -157,9 +157,8 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
       if (!queue || typeof queue.push !== 'function' || (queue as any).__bsWrapped) return;
       const origPush = queue.push.bind(queue);
       (queue as any).push = function (...fns: any[]) {
-        post('api', channel, label, { count: fns.length });
+        post('api', channel, label, { count: fns.length, items: fns.map(describePushed) });
         const ret = origPush(...fns);
-        // A publisher push is the earliest reliable readiness signal — re-poll.
         tryAttachAll();
         return ret;
       };
@@ -167,6 +166,21 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
     } catch (e) {
       post('error', 'hook', 'wrap_queue_error', { label, message: String(e) });
     }
+  }
+
+  function describePushed(item: unknown): unknown {
+    if (typeof item === 'function') {
+      const fn = item as { name?: string };
+      let preview = '';
+      try {
+        preview = Function.prototype.toString.call(item);
+      } catch {
+        preview = '';
+      }
+      if (preview.length > 500) preview = preview.slice(0, 500) + `…(+${preview.length - 500} chars)`;
+      return { type: 'function', name: fn.name || 'anonymous', preview };
+    }
+    return sanitize(item);
   }
 
   // Single boot poller: detect libLoaded / apiReady / pubadsReady transitions.
@@ -254,8 +268,9 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
   function extractPrebidIds(ev: string, payload: any): { auctionId?: string; adUnitCode?: string } {
     const out: { auctionId?: string; adUnitCode?: string } = {};
     if (payload && typeof payload === 'object') {
-      out.auctionId = payload.auctionId;
-      out.adUnitCode = payload.adUnitCode || payload.adUnit;
+      out.auctionId = payload.auctionId || payload.bidderRequest?.auctionId;
+      out.adUnitCode =
+        payload.adUnitCode || payload.adUnit || payload.bidderRequest?.bids?.[0]?.adUnitCode;
     }
     return out;
   }

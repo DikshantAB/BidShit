@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Badge, EmptyState, Input, Select, Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui';
+import { highlightOnPage } from './highlight';
 import { cn } from './lib/cn';
-import { auctionList, correlation } from './selectors';
+import { auctionList, auctionsForAdUnit, correlation, latestAuctionForAdUnit } from './selectors';
 import { useSession } from './store';
 import { BidsView } from './views/BidsView';
 import { EventsView } from './views/EventsView';
@@ -15,13 +16,50 @@ export default function App({ inspectable }: { inspectable: boolean }) {
   const [auctionId, setAuctionId] = useState<string>('');
   const [selectedEntity, setSelectedEntity] = useState<string>('');
   const [search, setSearch] = useState('');
+  const [highlightNote, setHighlightNote] = useState('');
 
   const auctions = useMemo(() => auctionList(session), [session]);
+  const auctionsForSelected = useMemo(
+    () => (selectedEntity ? auctionsForAdUnit(auctions, selectedEntity) : auctions),
+    [auctions, selectedEntity]
+  );
 
   // Default to the most recent auction as they arrive.
   useEffect(() => {
     if (!auctionId && auctions.length) setAuctionId(auctions[auctions.length - 1].auctionId);
   }, [auctions, auctionId]);
+
+  // Clicking an ad unit selects the latest auction that actually ran for it.
+  useEffect(() => {
+    if (!selectedEntity || !auctions.length) return;
+    const match = latestAuctionForAdUnit(auctions, selectedEntity);
+    if (!match) return;
+    setAuctionId((current) => {
+      if (current && auctionsForAdUnit(auctions, selectedEntity).some((a) => a.auctionId === current)) {
+        return current;
+      }
+      return match.auctionId;
+    });
+  }, [selectedEntity, auctions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedEntity) {
+      void highlightOnPage(null);
+      setHighlightNote('');
+      return () => {
+        cancelled = true;
+      };
+    }
+    void highlightOnPage(selectedEntity).then((result) => {
+      if (cancelled) return;
+      setHighlightNote(result.ok ? '' : 'No matching div on the page (id / slot element id).');
+    });
+    return () => {
+      cancelled = true;
+      void highlightOnPage(null);
+    };
+  }, [selectedEntity]);
 
   if (!inspectable) {
     return (
@@ -37,7 +75,7 @@ export default function App({ inspectable }: { inspectable: boolean }) {
     <Shell status={session}>
       <div className="flex min-h-0 flex-1">
         {/* Left rail */}
-        <LeftRail selected={selectedEntity} onSelect={setSelectedEntity} />
+        <LeftRail selected={selectedEntity} onSelect={setSelectedEntity} highlightNote={highlightNote} />
 
         {/* Main column */}
         <div className="flex min-w-0 flex-1 flex-col">
@@ -45,14 +83,22 @@ export default function App({ inspectable }: { inspectable: boolean }) {
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
             <label className="text-muted-foreground">Auction</label>
             <Select value={auctionId} onChange={(e) => setAuctionId(e.target.value)}>
-              {auctions.length === 0 && <option value="">— none —</option>}
-              {auctions.map((a, i) => (
-                <option key={a.auctionId} value={a.auctionId}>
-                  #{i + 1} {a.auctionId.slice(0, 8)} · {a.startTs ? new Date(a.startTs).toLocaleTimeString() : '—'} ·{' '}
-                  {a.status || 'inProgress'}
-                </option>
-              ))}
+              {auctionsForSelected.length === 0 && <option value={auctionId || ''}>— none for this slot —</option>}
+              {auctionsForSelected.map((a) => {
+                const i = auctions.findIndex((x) => x.auctionId === a.auctionId);
+                return (
+                  <option key={a.auctionId} value={a.auctionId}>
+                    #{i + 1} {a.auctionId.slice(0, 8)} · {a.startTs ? new Date(a.startTs).toLocaleTimeString() : '—'} ·{' '}
+                    {a.status || 'inProgress'}
+                  </option>
+                );
+              })}
             </Select>
+            {selectedEntity && auctionsForSelected.length > 0 && (
+              <span className="text-[10px] text-muted-foreground">
+                {auctionsForSelected.length} auction{auctionsForSelected.length === 1 ? '' : 's'} for this slot
+              </span>
+            )}
             {selectedEntity && (
               <Badge variant="outline" className="gap-1">
                 {selectedEntity}
@@ -152,7 +198,15 @@ function Chip({ on, label, tone }: { on: boolean; label: string; tone?: 'success
   );
 }
 
-function LeftRail({ selected, onSelect }: { selected: string; onSelect: (v: string) => void }) {
+function LeftRail({
+  selected,
+  onSelect,
+  highlightNote,
+}: {
+  selected: string;
+  onSelect: (v: string) => void;
+  highlightNote: string;
+}) {
   const session = useSession();
   const corr = useMemo(() => correlation(session), [session]);
 
@@ -168,6 +222,11 @@ function LeftRail({ selected, onSelect }: { selected: string; onSelect: (v: stri
       <div className="border-b border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
         Ad units / Slots ({entities.length})
       </div>
+      {selected && (
+        <div className="border-b border-border px-3 py-1.5 text-[10px] text-muted-foreground">
+          Highlighting on page{highlightNote ? ` — ${highlightNote}` : ''}
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-auto">
         {entities.length === 0 && <div className="px-3 py-2 text-muted-foreground">No ad units or slots yet.</div>}
         {entities.map((id) => {

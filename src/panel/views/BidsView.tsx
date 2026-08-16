@@ -25,6 +25,14 @@ export function BidsView({ auctionId, entity }: { auctionId: string; entity: str
     if (!session.status.prebidPresent) {
       return <EmptyState title="Header bidding was not observed." hint="No Prebid.js activity on this page — the Bids tab needs pbjs." />;
     }
+    if (entity) {
+      return (
+        <EmptyState
+          title="No bids for this ad unit in the selected auction."
+          hint="The auction selector is limited to auctions that included this slot. Pick another auction above, or clear the slot filter."
+        />
+      );
+    }
     return <EmptyState title="No bids captured for this auction yet." />;
   }
 
@@ -45,6 +53,7 @@ export function BidsView({ auctionId, entity }: { auctionId: string; entity: str
             <TH>Status</TH>
             <TH>TTR</TH>
             <TH>Outcome</TH>
+            <TH>Reason</TH>
           </TR>
         </THead>
         <TBody>
@@ -60,7 +69,7 @@ export function BidsView({ auctionId, entity }: { auctionId: string; entity: str
 function BidRowView({ row }: { row: BidRow }) {
   const [open, setOpen] = useState(false);
   const [showCreative, setShowCreative] = useState(false);
-  const expandable = !!row.raw;
+  const expandable = !!row.raw || !!row.rejectionReason;
   return (
     <Fragment>
       <TR className="cursor-pointer" onClick={() => expandable && setOpen((o) => !o)}>
@@ -77,20 +86,24 @@ function BidRowView({ row }: { row: BidRow }) {
         <TD className="font-mono">{row.ttr != null ? `${row.ttr}ms` : '—'}</TD>
         <TD>
           <Badge variant={outcomeVariant[row.outcome]}>{row.outcome}</Badge>
-          {row.rejectionReason && <span className="ml-1 text-[10px] text-destructive">{row.rejectionReason}</span>}
+        </TD>
+        <TD className="max-w-[220px] text-[11px] text-destructive" title={row.rejectionReason || ''}>
+          {row.rejectionReason || (row.outcome === 'error' || row.outcome === 'rejected' ? '—' : '')}
         </TD>
       </TR>
-      {open && row.raw && (
+      {open && (
         <TR>
-          <TD colSpan={12}>
+          <TD colSpan={13}>
             <div className="grid grid-cols-2 gap-3 py-1">
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">Identity</div>
+                <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">Identity / reason</div>
                 <Json
                   value={{
                     adId: row.adId,
                     requestId: row.requestId,
                     auctionId: row.auctionId,
+                    outcome: row.outcome,
+                    rejectionReason: row.rejectionReason,
                     meta: row.meta,
                   }}
                 />
@@ -108,7 +121,7 @@ function BidRowView({ row }: { row: BidRow }) {
                     {showCreative ? 'hide creative note' : 'show creative note'}
                   </button>
                 </div>
-                <Json value={row.raw} className="max-h-72" />
+                <Json value={row.raw ?? { note: 'No bid object captured; reason from event payload.' }} className="max-h-72" />
                 {showCreative && (
                   <div className="mt-1 text-[10px] text-muted-foreground">
                     Creative markup (`ad`/`vastXml`) is stripped by default for size/privacy (spec 12).
