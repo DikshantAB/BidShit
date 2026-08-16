@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "BidShitter — Prebid + GPT Debugger",
+  "version": "0.1.0",
+  "description": "Passive DevTools debugger that visualizes the Prebid.js + GPT/GAM ad serving lifecycle. Observe only.",
+  "minimum_chrome_version": "111",
+  "devtools_page": "devtools.html",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": false
+    }
+  ]
+}

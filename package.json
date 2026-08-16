@@ -1,0 +1,37 @@
+{
+  "name": "bidshitter",
+  "private": true,
+  "version": "0.1.0",
+  "description": "BidShitter - passive Chrome DevTools debugger for the Prebid.js + GPT/GAM ad serving lifecycle.",
+  "type": "module",
+  "scripts": {
+    "clean": "rimraf dist",
+    "build:pages": "vite build",
+    "build:background": "vite build -c vite.background.config.ts",
+    "build:content": "vite build -c vite.content.config.ts",
+    "build:hook": "vite build -c vite.hook.config.ts",
+    "build": "npm run build:pages && npm run build:background && npm run build:content && npm run build:hook",
+    "dev": "vite build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.10.8",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.454.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.4"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.280",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "rimraf": "^6.0.1",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
