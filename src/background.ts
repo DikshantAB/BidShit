@@ -125,6 +125,10 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onMessage.addListener((msg: PanelToBackground) => {
     if (msg && msg.type === 'ping') return;
+    if (msg && msg.type === 'network' && boundTabId !== undefined && Array.isArray(msg.envelopes)) {
+      void withTab(boundTabId, (buf) => pushInto(boundTabId!, buf, msg.envelopes));
+      return;
+    }
     if (msg && msg.type === 'init' && typeof msg.tabId === 'number') {
       boundTabId = msg.tabId;
       panelPorts.set(boundTabId, port);

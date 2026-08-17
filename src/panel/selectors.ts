@@ -1,5 +1,21 @@
 // Pure derivations over the session state for the views.
+import { requestMatchesSlot } from '../shared/gam-network';
 import type { AuctionRecord, BidRow, Envelope, SessionState } from '../shared/types';
+
+export {
+  classifyAllRenderCycles,
+  classifyCreative,
+  classifyRenderCycle,
+  confidenceVariant,
+  creativeSourceVariant,
+  listRenderCycles,
+  type ClassificationFacts,
+  type Confidence,
+  type CreativeClassification,
+  type CreativeSource,
+  type EvidenceItem,
+  type RenderCycle,
+} from './ad-source';
 
 export function auctionList(s: SessionState): AuctionRecord[] {
   return Array.from(s.auctions.values()).sort((a, b) => (a.startTs || 0) - (b.startTs || 0));
@@ -247,10 +263,6 @@ export function correlation(s: SessionState): {
   return { matched, unmatchedAdUnits, unmatchedSlots };
 }
 
-/**
- * FR3 race check: did a GPT display/refresh happen before Prebid targeting
- * was pushed toward the ad server?
- */
 export function targetingRace(s: SessionState): boolean {
   let firstTargetingSeq = Infinity;
   let firstAdServerCallSeq = Infinity;
@@ -265,14 +277,84 @@ export function targetingRace(s: SessionState): boolean {
   return firstAdServerCallSeq < firstTargetingSeq && firstAdServerCallSeq !== Infinity;
 }
 
+export function gptApiTouchesEntity(
+  e: Envelope,
+  entity: string,
+  slotAdUnitPath?: string
+): boolean {
+  if (e.slotElementId === entity || e.adUnitCode === entity) return true;
+  const args = (e.payload as any)?.args;
+  if (!Array.isArray(args) || args.length === 0) {
+    // refresh()/clear() with no slot list applies to every slot.
+    return e.name === 'refresh' || e.name === 'clear';
+  }
+  return valueMentions(args, entity, slotAdUnitPath);
+}
+
+/** True when this envelope belongs to the selected ad unit / GPT slot. */
+export function envelopeTouchesEntity(
+  e: Envelope,
+  entity: string,
+  opts?: { slotAdUnitPath?: string; keepUnscoped?: boolean }
+): boolean {
+  if (!entity) return true;
+  if (e.adUnitCode === entity || e.slotElementId === entity) return true;
+  if (e.channel === 'network') {
+    return requestMatchesSlot((e.payload as any)?.iuPaths, opts?.slotAdUnitPath);
+  }
+  if (e.channel === 'gpt' && e.kind === 'api') {
+    return gptApiTouchesEntity(e, entity, opts?.slotAdUnitPath);
+  }
+  if (e.adUnitCode || e.slotElementId) return false;
+  return opts?.keepUnscoped === true;
+}
+
+function valueMentions(value: unknown, entity: string, slotAdUnitPath?: string): boolean {
+  if (value == null) return false;
+  if (typeof value === 'string') {
+    return value === entity || (!!slotAdUnitPath && value === slotAdUnitPath) || value.includes(entity);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return false;
+  if (Array.isArray(value)) return value.some((v) => valueMentions(v, entity, slotAdUnitPath));
+  if (typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    if (o.slotElementId === entity || o.adUnitCode === entity || o.code === entity) return true;
+    if (slotAdUnitPath && (o.adUnitPath === slotAdUnitPath || o.iu === slotAdUnitPath)) return true;
+    try {
+      const s = JSON.stringify(value);
+      if (s.includes(entity)) return true;
+      if (slotAdUnitPath && s.includes(slotAdUnitPath)) return true;
+    } catch {
+      /* ignore */
+    }
+  }
+  return false;
+}
+
 export function filterEnvelopes(
   envelopes: Envelope[],
-  opts: { channel?: string; name?: string; text?: string }
+  opts: {
+    channel?: string;
+    name?: string;
+    names?: string[];
+    text?: string;
+    entity?: string;
+    slotAdUnitPath?: string;
+    keepUnscoped?: boolean;
+  }
 ): Envelope[] {
   const text = opts.text?.trim().toLowerCase();
+  const names = (opts.names || []).filter(Boolean);
   return envelopes.filter((e) => {
     if (opts.channel && opts.channel !== 'all' && e.channel !== opts.channel) return false;
-    if (opts.name && opts.name !== 'all' && e.name !== opts.name) return false;
+    if (names.length && !names.includes(e.name)) return false;
+    else if (!names.length && opts.name && opts.name !== 'all' && e.name !== opts.name) return false;
+    if (opts.entity && !envelopeTouchesEntity(e, opts.entity, {
+      slotAdUnitPath: opts.slotAdUnitPath,
+      keepUnscoped: opts.keepUnscoped,
+    })) {
+      return false;
+    }
     if (text) {
       const hay = `${e.channel} ${e.kind} ${e.name} ${e.auctionId || ''} ${e.slotElementId || ''} ${
         e.adUnitCode || ''

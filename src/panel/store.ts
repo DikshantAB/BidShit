@@ -50,6 +50,7 @@ class Store {
   private port?: chrome.runtime.Port;
   private connGen = 0;
   private seenSeq = new Set<number>();
+  private seenNetwork = new Set<string>();
   private pingTimer?: ReturnType<typeof setInterval>;
 
   getSnapshot = (): SessionState => this.state;
@@ -111,9 +112,20 @@ class Store {
     }
   }
 
+  ingestNetwork(env: Envelope): void {
+    this.apply(env);
+    this.emit();
+    try {
+      this.port?.postMessage({ type: 'network', envelopes: [env] } satisfies PanelToBackground);
+    } catch {
+      /* SW down; panel still has the event */
+    }
+  }
+
   reset(): void {
     const wasConnected = this.state.connected;
     this.seenSeq.clear();
+    this.seenNetwork.clear();
     this.state = emptyState(wasConnected);
     this.emit();
   }
@@ -145,13 +157,19 @@ class Store {
 
   private apply(env: Envelope): void {
     if (this.seenSeq.has(env.seq)) return;
+    if (env.channel === 'network') {
+      const p = env.payload as any;
+      const key = `${p?.url || ''}|${env.ts}|${p?.status ?? ''}|${p?.bodySize ?? ''}`;
+      if (this.seenNetwork.has(key)) return;
+      this.seenNetwork.add(key);
+    }
     this.seenSeq.add(env.seq);
     const s = this.state;
     s.envelopes.push(env);
     if (s.envelopes.length > BUFFER_CAP) s.envelopes.splice(0, s.envelopes.length - BUFFER_CAP);
 
     if (env.channel === 'prebid') s.status.prebidPresent = true;
-    if (env.channel === 'gpt') s.status.gptPresent = true;
+    if (env.channel === 'gpt' || env.channel === 'network') s.status.gptPresent = true;
 
     if (env.kind === 'status') this.applyStatus(env);
     else if (env.kind === 'snapshot') this.applySnapshot(env);
@@ -202,10 +220,11 @@ class Store {
     }
     if (env.name === 'getResponseInformation' && env.slotElementId && p) {
       const slot = this.upsertSlot(env.slotElementId);
-      slot.lineItemId = p.lineItemId;
-      slot.creativeId = p.creativeId;
-      slot.advertiserId = p.advertiserId;
-      slot.campaignId = p.campaignId;
+      slot.lineItemId = p.lineItemId ?? slot.lineItemId;
+      slot.creativeId = p.creativeId ?? slot.creativeId;
+      slot.advertiserId = p.advertiserId ?? slot.advertiserId;
+      slot.campaignId = p.campaignId ?? slot.campaignId;
+      slot.creativeTemplateId = p.creativeTemplateId ?? slot.creativeTemplateId;
     }
   }
 
@@ -287,6 +306,13 @@ class Store {
     slot.lastActivity = env.name;
     if (p?.adUnitPath) slot.adUnitPath = p.adUnitPath;
     switch (env.name) {
+      case 'slotRequested':
+        slot.requested = true;
+        if (p?.targeting && typeof p.targeting === 'object') slot.targetingAtRequest = p.targeting;
+        break;
+      case 'slotResponseReceived':
+        slot.responseReceived = true;
+        break;
       case 'slotRenderEnded':
         slot.isEmpty = !!p?.isEmpty;
         slot.filled = !p?.isEmpty;
@@ -294,6 +320,22 @@ class Store {
         slot.creativeId = p?.creativeId ?? slot.creativeId;
         slot.advertiserId = p?.advertiserId ?? slot.advertiserId;
         slot.campaignId = p?.campaignId ?? slot.campaignId;
+        slot.creativeTemplateId = p?.creativeTemplateId ?? slot.creativeTemplateId;
+        slot.companyIds = p?.companyIds ?? slot.companyIds;
+        slot.yieldGroupIds = p?.yieldGroupIds ?? slot.yieldGroupIds;
+        slot.isBackfill = p?.isBackfill ?? slot.isBackfill;
+        slot.sourceAgnosticLineItemId = p?.sourceAgnosticLineItemId ?? slot.sourceAgnosticLineItemId;
+        slot.sourceAgnosticCreativeId = p?.sourceAgnosticCreativeId ?? slot.sourceAgnosticCreativeId;
+        slot.responseIdentifier = p?.responseIdentifier ?? slot.responseIdentifier;
+        slot.renderedSize = p?.size ?? slot.renderedSize;
+        slot.slotContentChanged = p?.slotContentChanged ?? slot.slotContentChanged;
+        if (p?.targeting && typeof p.targeting === 'object') slot.targeting = p.targeting;
+        break;
+      case 'slotOnload':
+        slot.onloaded = true;
+        break;
+      case 'impressionViewable':
+        slot.viewable = true;
         break;
       case 'slotVisibilityChanged':
         if (typeof p?.inViewPercentage === 'number') slot.inViewPercentage = p.inViewPercentage;

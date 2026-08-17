@@ -14,10 +14,13 @@ export function TargetingView({ entity }: { entity: string }) {
 
   const prebidCodes = Object.keys(session.prebidTargeting).filter((c) => !entity || c === entity);
   const gptPage = session.gptPageTargeting;
+  const slot = entity ? session.slots.get(entity) : undefined;
+  const slotTargeting = slot?.targetingAtRequest || slot?.targeting;
   const hasPrebid = prebidCodes.length > 0;
   const hasGptPage = Object.keys(gptPage).length > 0;
+  const hasSlotTargeting = !!(slotTargeting && Object.keys(slotTargeting).length);
 
-  if (!hasPrebid && !hasGptPage) {
+  if (!hasPrebid && !hasGptPage && !hasSlotTargeting) {
     return (
       <EmptyState
         title="No targeting observed yet."
@@ -59,6 +62,15 @@ export function TargetingView({ entity }: { entity: string }) {
               <KvTable kv={session.prebidTargeting[code]} highlightHb />
             </div>
           ))}
+        </Card>
+      )}
+
+      {hasSlotTargeting && slot && (
+        <Card className="p-3">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            GPT slot targeting at request · {slot.slotElementId}
+          </div>
+          <KvTable kv={slotTargeting!} highlightHb />
         </Card>
       )}
 

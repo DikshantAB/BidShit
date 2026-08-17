@@ -1,7 +1,7 @@
 // Shared message + domain types. See spec.md sections 7.3 and 7.4.
 
 export type EnvelopeKind = 'event' | 'api' | 'snapshot' | 'status' | 'error';
-export type EnvelopeChannel = 'prebid' | 'gpt' | 'hook';
+export type EnvelopeChannel = 'prebid' | 'gpt' | 'hook' | 'network';
 
 /** One captured record travelling hook -> content-script -> background -> panel. */
 export interface Envelope {
@@ -38,7 +38,8 @@ export interface RelayMessage {
 /** panel -> background (port). */
 export type PanelToBackground =
   | { type: 'init'; tabId: number }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  | { type: 'network'; envelopes: Envelope[] };
 
 /** @deprecated use PanelToBackground */
 export type PanelInit = Extract<PanelToBackground, { type: 'init' }>;
@@ -119,11 +120,25 @@ export interface SlotRecord {
   creativeId?: number | null;
   advertiserId?: number | null;
   campaignId?: number | null;
+  creativeTemplateId?: number | null;
+  companyIds?: number[] | null;
+  yieldGroupIds?: number[] | null;
+  isBackfill?: boolean;
+  sourceAgnosticLineItemId?: number | null;
+  sourceAgnosticCreativeId?: number | null;
+  responseIdentifier?: string;
+  renderedSize?: unknown;
+  slotContentChanged?: boolean;
+  requested?: boolean;
+  responseReceived?: boolean;
+  onloaded?: boolean;
+  viewable?: boolean;
   inViewPercentage?: number;
   lastActivity?: string;
   displayed?: boolean;
   refreshed?: boolean;
   targeting?: Record<string, unknown>;
+  targetingAtRequest?: Record<string, unknown>;
 }
 
 export interface AdUnitRecord {

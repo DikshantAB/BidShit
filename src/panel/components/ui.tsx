@@ -92,6 +92,69 @@ export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectE
   );
 }
 
+/** Checkbox list used for multi-event filters. Empty selection means “all”. */
+export function MultiSelect({
+  options,
+  selected,
+  onChange,
+  allLabel = 'all events',
+  className,
+}: {
+  options: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  allLabel?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const label = selected.length === 0 ? allLabel : selected.length === 1 ? selected[0] : `${selected.length} events`;
+  return (
+    <div className={cn('relative', className)}>
+      <button
+        type="button"
+        className="h-7 max-w-[220px] truncate rounded-md border border-input bg-background px-2 text-left text-xs outline-none focus:ring-1 focus:ring-ring"
+        onClick={() => setOpen((o) => !o)}
+      >
+        {label}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 z-30 mt-1 max-h-56 w-56 overflow-auto rounded-md border border-border bg-card p-1 shadow-md">
+            <label className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11px] hover:bg-accent/40">
+              <input
+                type="checkbox"
+                checked={selected.length === 0}
+                onChange={() => onChange([])}
+              />
+              {allLabel}
+            </label>
+            {options.map((opt) => {
+              const on = selected.includes(opt);
+              return (
+                <label
+                  key={opt}
+                  className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11px] hover:bg-accent/40"
+                >
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() => {
+                      if (on) onChange(selected.filter((s) => s !== opt));
+                      else onChange([...selected, opt]);
+                    }}
+                  />
+                  <span className="truncate font-mono">{opt}</span>
+                </label>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---- Card --------------------------------------------------------------
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('rounded-lg border border-border bg-card', className)} {...props} />;

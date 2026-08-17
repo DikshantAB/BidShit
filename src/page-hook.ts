@@ -92,7 +92,8 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
     host: any,
     method: string,
     channel: EnvelopeChannel,
-    onCall?: (args: any[], result: unknown) => void
+    onCall?: (args: any[], result: unknown) => void,
+    ids?: () => { auctionId?: string; adUnitCode?: string; slotElementId?: string }
   ): void {
     try {
       const orig = host[method];
@@ -108,7 +109,7 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
           threw = e;
         }
         try {
-          post('api', channel, method, { args, threw: didThrow ? String(threw) : undefined });
+          post('api', channel, method, { args, threw: didThrow ? String(threw) : undefined }, ids?.());
           if (!didThrow && onCall) onCall(args, result);
         } catch (e) {
           post('error', 'hook', 'wrap_callback_error', { method, message: String(e) });
@@ -227,6 +228,8 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
     // Attaching pubads listeners may be possible before pubadsReady flips,
     // as soon as pubads() is callable.
     attachGptPubads();
+    // PUC may load after Prebid; keep trying while the boot poller runs.
+    if (prebidAttached) observeUcTag();
   }
 
   // ---- Prebid ------------------------------------------------------------
@@ -245,7 +248,11 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
     }
 
     // Wrap observability methods (pure pass-through).
-    for (const m of PREBID_WRAP_METHODS) wrap(pbjs, m, 'prebid');
+    for (const m of PREBID_WRAP_METHODS) {
+      if (m === 'renderAd') wrapRenderAd(pbjs);
+      else wrap(pbjs, m, 'prebid');
+    }
+    observeUcTag();
 
     snapshotPrebidGlobals();
 
@@ -267,12 +274,115 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
 
   function extractPrebidIds(ev: string, payload: any): { auctionId?: string; adUnitCode?: string } {
     const out: { auctionId?: string; adUnitCode?: string } = {};
-    if (payload && typeof payload === 'object') {
-      out.auctionId = payload.auctionId || payload.bidderRequest?.auctionId;
-      out.adUnitCode =
-        payload.adUnitCode || payload.adUnit || payload.bidderRequest?.bids?.[0]?.adUnitCode;
+    if (!payload || typeof payload !== 'object') return out;
+    const bid = payload.bid && typeof payload.bid === 'object' ? payload.bid : payload;
+    out.auctionId =
+      bid.auctionId || payload.auctionId || payload.bidderRequest?.auctionId || bid.bidderRequest?.auctionId;
+    out.adUnitCode =
+      bid.adUnitCode ||
+      payload.adUnitCode ||
+      payload.adUnit ||
+      bid.adUnit ||
+      payload.bidderRequest?.bids?.[0]?.adUnitCode;
+    if (ev === 'adRenderSucceeded' || ev === 'adRenderFailed' || ev === 'bidWon') {
+      out.adUnitCode = bid.adUnitCode || payload.adUnitCode || out.adUnitCode;
+      out.auctionId = bid.auctionId || payload.auctionId || out.auctionId;
     }
     return out;
+  }
+
+  function summarizeRenderAdArgs(args: any[]): unknown[] {
+    // args: [doc, adId, options?] — never serialize the Document.
+    const adId = args[1] != null ? String(args[1]) : undefined;
+    const options = args[2] && typeof args[2] === 'object' ? sanitize(args[2]) : args[2];
+    return [{ __type: 'Document' }, adId, options];
+  }
+
+  function wrapRenderAd(pbjs: any): void {
+    try {
+      const orig = pbjs.renderAd;
+      if (typeof orig !== 'function' || orig.__bsWrapped) return;
+      const wrapped = function (this: any, ...args: any[]) {
+        let result: unknown;
+        let threw: unknown;
+        let didThrow = false;
+        try {
+          result = orig.apply(this, args);
+        } catch (e) {
+          didThrow = true;
+          threw = e;
+        }
+        try {
+          const adId = args[1] != null ? String(args[1]) : undefined;
+          post(
+            'api',
+            'prebid',
+            'renderAd',
+            { args: summarizeRenderAdArgs(args), threw: didThrow ? String(threw) : undefined, adId },
+            {}
+          );
+        } catch (e) {
+          post('error', 'hook', 'wrap_callback_error', { method: 'renderAd', message: String(e) });
+        }
+        if (didThrow) throw threw;
+        return result;
+      };
+      (wrapped as any).__bsWrapped = true;
+      pbjs.renderAd = wrapped;
+    } catch (e) {
+      post('error', 'hook', 'wrap_error', { method: 'renderAd', message: String(e) });
+    }
+  }
+
+  let ucTagWrapped = false;
+  function observeUcTag(): void {
+    if (ucTagWrapped) return;
+    try {
+      const uc = w.ucTag || (w.pbjs && w.pbjs.ucTag);
+      if (!uc || typeof uc.renderAd !== 'function') return;
+      if ((uc.renderAd as any).__bsWrapped) {
+        ucTagWrapped = true;
+        return;
+      }
+      const orig = uc.renderAd.bind(uc);
+      const wrapped = function (this: any, ...args: any[]) {
+        let result: unknown;
+        let threw: unknown;
+        let didThrow = false;
+        try {
+          result = orig(...args);
+        } catch (e) {
+          didThrow = true;
+          threw = e;
+        }
+        try {
+          const first = args[0];
+          const adId =
+            typeof first === 'string'
+              ? first
+              : first && typeof first === 'object'
+                ? first.adId || first.hb_adid || first.adid
+                : undefined;
+          post(
+            'api',
+            'prebid',
+            'ucTag.renderAd',
+            { args: sanitize(args), threw: didThrow ? String(threw) : undefined },
+            { adUnitCode: adId != null ? String(adId) : undefined }
+          );
+        } catch (e) {
+          post('error', 'hook', 'wrap_callback_error', { method: 'ucTag.renderAd', message: String(e) });
+        }
+        if (didThrow) throw threw;
+        return result;
+      };
+      (wrapped as any).__bsWrapped = true;
+      uc.renderAd = wrapped;
+      ucTagWrapped = true;
+      post('status', 'prebid', 'ucTag-observed', { hasRenderAd: true });
+    } catch (e) {
+      post('error', 'prebid', 'ucTag_wrap_error', { message: String(e) });
+    }
   }
 
   function snapshotPrebidGlobals(): void {
@@ -387,9 +497,7 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
         sizes: safe(() => slot.getSizes && slot.getSizes()),
       }, { slotElementId });
       for (const m of SLOT_WRAP_METHODS) {
-        wrap(slot, m, 'gpt', () => {
-          // no-op; the generic wrapper already logs args
-        });
+        wrap(slot, m, 'gpt', undefined, () => ({ slotElementId, adUnitCode: slotElementId }));
       }
     } catch (e) {
       post('error', 'gpt', 'wrap_slot_error', { message: String(e) });
@@ -397,23 +505,59 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
   }
 
   function onGptEvent(ev: string, e: any): void {
-    const slotElementId = safe(() => e && e.slot && e.slot.getSlotElementId());
-    const adUnitPath = safe(() => e && e.slot && e.slot.getAdUnitPath());
-    const payload = extractGptEvent(ev, e, adUnitPath);
+    const slot = e && e.slot;
+    const slotElementId = safe(() => slot && slot.getSlotElementId());
+    const adUnitPath = safe(() => slot && slot.getAdUnitPath());
+    const payload = extractGptEvent(ev, e, adUnitPath, slot);
     post('event', 'gpt', ev, payload, { slotElementId, adUnitCode: slotElementId });
 
-    // Enrich non-empty renders with response information (read-only).
-    if (ev === 'slotRenderEnded' && e && e.slot && !e.isEmpty) {
-      const info = safe(() => e.slot.getResponseInformation && e.slot.getResponseInformation());
+    if (ev === 'slotRenderEnded' && slot) {
+      const info = safe(() => slot.getResponseInformation && slot.getResponseInformation());
       if (info) post('snapshot', 'gpt', 'getResponseInformation', info, { slotElementId });
     }
   }
 
-  function extractGptEvent(ev: string, e: any, adUnitPath?: string): Record<string, unknown> {
+  function readSlotTargeting(slot: any): { targeting?: Record<string, unknown>; targetingKeys?: string[] } {
+    if (!slot) return {};
+    // The official googletag.Slot API has NO getTargetingMap(). Build the map from
+    // getTargetingKeys() + getTargeting(key), falling back to getConfig('targeting').
+    // Capturing hb_adid here is what lets ad-source classification correlate a GPT
+    // render cycle to a Prebid bid by adId (the strongest PREBID signal).
+    let targetingKeys = safe(() => (slot.getTargetingKeys ? slot.getTargetingKeys() : undefined));
+    let targeting: Record<string, unknown> | undefined;
+    if (Array.isArray(targetingKeys) && typeof slot.getTargeting === 'function') {
+      const map: Record<string, unknown> = {};
+      for (const key of targetingKeys) {
+        const val = safe(() => slot.getTargeting(key));
+        if (val !== undefined) map[key] = val;
+      }
+      targeting = map;
+    }
+    // Fallback: modern config read (frozen object).
+    if (!targeting || Object.keys(targeting).length === 0) {
+      const cfg = safe(() => (slot.getConfig ? slot.getConfig('targeting') : undefined)) as any;
+      const fromCfg = cfg && typeof cfg === 'object' ? (cfg.targeting ?? cfg) : undefined;
+      if (fromCfg && typeof fromCfg === 'object') {
+        targeting = fromCfg as Record<string, unknown>;
+        if (!targetingKeys) targetingKeys = Object.keys(targeting);
+      }
+    }
+    // Last resort: some GPT builds expose getTargetingMap; keep it if present.
+    if (!targeting) {
+      targeting = safe(() => (slot.getTargetingMap ? slot.getTargetingMap() : undefined));
+      if (targeting && !targetingKeys) targetingKeys = Object.keys(targeting);
+    }
+    return { targeting, targetingKeys };
+  }
+
+  function extractGptEvent(ev: string, e: any, adUnitPath?: string, slot?: any): Record<string, unknown> {
     const base: Record<string, unknown> = {
       serviceName: safe(() => e && e.serviceName),
       adUnitPath,
     };
+    if (ev === 'slotRequested' || ev === 'slotResponseReceived' || ev === 'slotRenderEnded') {
+      Object.assign(base, readSlotTargeting(slot));
+    }
     switch (ev) {
       case 'slotRenderEnded':
         return {
@@ -424,11 +568,15 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
           creativeId: e && e.creativeId,
           advertiserId: e && e.advertiserId,
           campaignId: e && e.campaignId,
+          creativeTemplateId: e && e.creativeTemplateId,
+          companyIds: e && e.companyIds,
+          yieldGroupIds: e && e.yieldGroupIds,
           isBackfill: e && e.isBackfill,
           sourceAgnosticLineItemId: e && e.sourceAgnosticLineItemId,
           sourceAgnosticCreativeId: e && e.sourceAgnosticCreativeId,
           responseIdentifier: e && e.responseIdentifier,
           slotContentChanged: e && e.slotContentChanged,
+          labelIds: e && e.labelIds,
         };
       case 'slotVisibilityChanged':
         return { ...base, inViewPercentage: e && e.inViewPercentage };

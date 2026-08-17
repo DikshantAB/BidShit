@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Badge, EmptyState, Input, Select, Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui';
 import { highlightOnPage } from './highlight';
 import { cn } from './lib/cn';
-import { auctionList, auctionsForAdUnit, correlation, latestAuctionForAdUnit } from './selectors';
+import { auctionList, auctionsForAdUnit, classifyCreative, confidenceVariant, correlation, creativeSourceVariant, latestAuctionForAdUnit } from './selectors';
 import { useSession } from './store';
 import { BidsView } from './views/BidsView';
 import { EventsView } from './views/EventsView';
 import { GptView } from './views/GptView';
+import { SourceView } from './views/SourceView';
 import { TargetingView } from './views/TargetingView';
 import { TimelineView } from './views/TimelineView';
 
@@ -119,6 +120,7 @@ export default function App({ inspectable }: { inspectable: boolean }) {
                 <TabsTrigger value="bids">Bids</TabsTrigger>
                 <TabsTrigger value="targeting">Targeting</TabsTrigger>
                 <TabsTrigger value="gpt">GPT</TabsTrigger>
+                <TabsTrigger value="source">Source</TabsTrigger>
                 <TabsTrigger value="events">Events</TabsTrigger>
               </TabsList>
             </div>
@@ -143,8 +145,11 @@ export default function App({ inspectable }: { inspectable: boolean }) {
                   <TabsContent value="gpt" className="h-full">
                     <GptView entity={selectedEntity} />
                   </TabsContent>
+                  <TabsContent value="source" className="h-full">
+                    <SourceView entity={selectedEntity} />
+                  </TabsContent>
                   <TabsContent value="events" className="h-full">
-                    <EventsView search={search} />
+                    <EventsView search={search} entity={selectedEntity} />
                   </TabsContent>
                 </>
               )}
@@ -235,6 +240,7 @@ function LeftRail({
           const isMatched = corr.matched.includes(id);
           const isUnmatched =
             (au && corr.unmatchedAdUnits.includes(id)) || (slot && corr.unmatchedSlots.includes(id));
+          const cls = classifyCreative(session, id);
           return (
             <button
               key={id}
@@ -248,6 +254,11 @@ function LeftRail({
                 {id}
               </div>
               <div className="flex flex-wrap gap-1">
+                <Badge variant={creativeSourceVariant(cls.source)} title={cls.reason}>
+                  {cls.source}
+                  {cls.bidder ? ` · ${cls.bidder}` : ''}
+                </Badge>
+                <Badge variant={confidenceVariant(cls.confidence)}>{cls.confidence}</Badge>
                 {au?.mediaTypes?.map((mt) => (
                   <Badge key={mt} variant="secondary">
                     {mt}

@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import { startNetworkCapture } from './network-capture';
 import { store } from './store';
 import './index.css';
 
@@ -13,6 +14,7 @@ const tabId =
 
 if (typeof tabId === 'number') {
   store.connect(tabId);
+  startNetworkCapture();
 }
 
 createRoot(document.getElementById('root')!).render(
