@@ -91,7 +91,7 @@ export function GptView({ entity }: { entity: string }) {
 
   return (
     <div className="h-full min-w-0 space-y-3 overflow-auto p-3">
-      <Card className="min-w-0 overflow-hidden p-3">
+      <Card dismissible className="min-w-0 overflow-hidden p-3">
         <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Slot registry ({slots.length})
         </div>
@@ -165,7 +165,7 @@ export function GptView({ entity }: { entity: string }) {
       </Card>
 
       {unmatchedRequests.length > 0 && !entity && (
-        <Card className="min-w-0 overflow-hidden p-3">
+        <Card dismissible className="min-w-0 overflow-hidden p-3">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             GAM HTTP not matched to a defined slot ({unmatchedRequests.length})
           </div>
@@ -189,7 +189,7 @@ export function GptView({ entity }: { entity: string }) {
         />
       ))}
 
-      <Card className="min-w-0 overflow-hidden p-3">
+      <Card dismissible className="min-w-0 overflow-hidden p-3">
         <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           PubAds / GPT API calls{entity ? ` · ${entity}` : ''}
         </div>
@@ -197,7 +197,7 @@ export function GptView({ entity }: { entity: string }) {
       </Card>
 
       {privacyCalls.length > 0 && !entity && (
-        <Card className="min-w-0 overflow-hidden p-3">
+        <Card dismissible className="min-w-0 overflow-hidden p-3">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Privacy settings observed (flags only)
           </div>
@@ -229,7 +229,7 @@ function GamFillCard({
   const empty = slot.isEmpty === true || rp.isEmpty === true;
 
   return (
-    <Card className="min-w-0 overflow-hidden p-3">
+    <Card dismissible className="min-w-0 overflow-hidden p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           GAM fill · {slot.slotElementId}

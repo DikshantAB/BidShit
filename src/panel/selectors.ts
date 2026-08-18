@@ -1,6 +1,9 @@
 // Pure derivations over the session state for the views.
+import { diagnose, type DiagnosticIssue, type IssueScope, type Severity } from '../diagnostics';
 import { requestMatchesSlot } from '../shared/gam-network';
 import type { AuctionRecord, BidRow, Envelope, SessionState } from '../shared/types';
+
+export type { DiagnosticIssue, IssueScope, Severity } from '../diagnostics';
 
 export {
   classifyAllRenderCycles,
@@ -329,6 +332,110 @@ function valueMentions(value: unknown, entity: string, slotAdUnitPath?: string):
     }
   }
   return false;
+}
+
+// ---- Diagnostics (Issues tab) -----------------------------------------
+
+/** Run the full catalog rule engine over the session. */
+export function diagnoseSession(s: SessionState): DiagnosticIssue[] {
+  return diagnose(s);
+}
+
+/** True when an issue is scoped to (or mentions) the selected ad unit / GPT slot. */
+export function issueTouchesEntity(issue: DiagnosticIssue, entity: string): boolean {
+  if (!entity) return true;
+  return issue.slotId === entity || issue.adUnitCode === entity;
+}
+
+/** An issue is "global" when it is not pinned to a specific slot or ad unit. */
+export function isGlobalIssue(issue: DiagnosticIssue): boolean {
+  return !issue.slotId && !issue.adUnitCode;
+}
+
+export interface IssueFilter {
+  scopes?: IssueScope[];
+  severities?: Severity[];
+  confidences?: DiagnosticIssue['confidence'][];
+  text?: string;
+  entity?: string;
+  /** When an entity is selected: 'entity' shows only its issues, 'all' shows everything. */
+  entityMode?: 'entity' | 'all';
+}
+
+export function filterIssues(issues: DiagnosticIssue[], f: IssueFilter): DiagnosticIssue[] {
+  const text = f.text?.trim().toLowerCase();
+  return issues.filter((issue) => {
+    if (f.scopes && f.scopes.length && !f.scopes.includes(issue.scope)) return false;
+    if (f.severities && f.severities.length && !f.severities.includes(issue.severity)) return false;
+    if (f.confidences && f.confidences.length && !f.confidences.includes(issue.confidence)) return false;
+    if (f.entity && f.entityMode !== 'all' && !issueTouchesEntity(issue, f.entity)) return false;
+    if (text) {
+      const hay = `${issue.ruleId} ${issue.title} ${issue.explanation} ${issue.scope} ${issue.severity} ${
+        issue.confidence
+      } ${issue.slotId || ''} ${issue.adUnitCode || ''} ${issue.auctionId || ''} ${issue.evidence
+        .map((e) => e.summary)
+        .join(' ')}`.toLowerCase();
+      if (!hay.includes(text)) return false;
+    }
+    return true;
+  });
+}
+
+export const ISSUE_SCOPES: IssueScope[] = ['observation', 'prebid', 'gpt', 'integration', 'network'];
+export const ISSUE_SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
+export const ISSUE_CONFIDENCES: DiagnosticIssue['confidence'][] = ['confirmed', 'likely', 'possible'];
+
+export function countBy<T extends string>(issues: DiagnosticIssue[], key: (i: DiagnosticIssue) => T): Record<T, number> {
+  const out = {} as Record<T, number>;
+  for (const issue of issues) {
+    const k = key(issue);
+    out[k] = (out[k] || 0) + 1;
+  }
+  return out;
+}
+
+export function severityVariant(
+  severity: Severity
+): 'default' | 'secondary' | 'success' | 'warning' | 'destructive' | 'outline' {
+  switch (severity) {
+    case 'critical':
+    case 'high':
+      return 'destructive';
+    case 'medium':
+      return 'warning';
+    case 'low':
+      return 'secondary';
+    default:
+      return 'outline';
+  }
+}
+
+export function issueConfidenceVariant(
+  confidence: DiagnosticIssue['confidence']
+): 'default' | 'secondary' | 'outline' {
+  switch (confidence) {
+    case 'confirmed':
+      return 'default';
+    case 'likely':
+      return 'secondary';
+    default:
+      return 'outline';
+  }
+}
+
+export function scopeLabel(scope: IssueScope): string {
+  switch (scope) {
+    case 'observation':
+      return 'Observation';
+    case 'prebid':
+      return 'Prebid';
+    case 'gpt':
+      return 'GPT / GAM';
+    case 'integration':
+      return 'Prebid + GPT';
+    case 'network':
+      return 'Network';
+  }
 }
 
 export function filterEnvelopes(

@@ -12,16 +12,28 @@ const channelTone: Record<string, string> = {
   network: 'border-l-[hsl(var(--success))]',
 };
 
+/** Default Timeline event filter. Empty MultiSelect still means “all events”. */
+const DEFAULT_TIMELINE_EVENTS = [
+  'auctionInit',
+  'auctionEnd',
+  'auctionDebug',
+  'apiReady',
+  'libLoaded',
+  'display',
+  'refresh',
+  'setTargetingForGPTAsync',
+];
+
 export function TimelineView({ auctionId, entity, search }: { auctionId: string; entity: string; search: string }) {
   const session = useSession();
   const [channel, setChannel] = useState('all');
-  const [names, setNames] = useState<string[]>([]);
+  const [names, setNames] = useState<string[]>(DEFAULT_TIMELINE_EVENTS);
   const [localSearch, setLocalSearch] = useState('');
   const text = localSearch || search;
   const slotPath = entity ? session.slots.get(entity)?.adUnitPath : undefined;
 
   const namesOptions = useMemo(() => {
-    const set = new Set<string>();
+    const set = new Set<string>(DEFAULT_TIMELINE_EVENTS);
     for (const e of session.envelopes) set.add(e.name);
     return Array.from(set).sort();
   }, [session]);

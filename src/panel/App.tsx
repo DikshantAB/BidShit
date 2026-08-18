@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Badge, EmptyState, Input, Select, Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui';
 import { highlightOnPage } from './highlight';
 import { cn } from './lib/cn';
-import { auctionList, auctionsForAdUnit, classifyCreative, confidenceVariant, correlation, creativeSourceVariant, latestAuctionForAdUnit } from './selectors';
+import { auctionList, auctionsForAdUnit, classifyCreative, confidenceVariant, correlation, creativeSourceVariant, diagnoseSession, latestAuctionForAdUnit } from './selectors';
 import { useSession } from './store';
 import { BidsView } from './views/BidsView';
 import { EventsView } from './views/EventsView';
 import { GptView } from './views/GptView';
+import { IssuesView } from './views/IssuesView';
 import { SourceView } from './views/SourceView';
 import { TargetingView } from './views/TargetingView';
 import { TimelineView } from './views/TimelineView';
@@ -20,6 +21,8 @@ export default function App({ inspectable }: { inspectable: boolean }) {
   const [highlightNote, setHighlightNote] = useState('');
 
   const auctions = useMemo(() => auctionList(session), [session]);
+  const issues = useMemo(() => diagnoseSession(session), [session]);
+  const issueCount = issues.length;
   const auctionsForSelected = useMemo(
     () => (selectedEntity ? auctionsForAdUnit(auctions, selectedEntity) : auctions),
     [auctions, selectedEntity]
@@ -116,6 +119,16 @@ export default function App({ inspectable }: { inspectable: boolean }) {
           <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
             <div className="border-b border-border px-3 py-2">
               <TabsList>
+                <TabsTrigger value="issues">
+                  <span className="inline-flex items-center gap-1">
+                    Issues
+                    {issueCount > 0 && (
+                      <span className="inline-flex min-w-[16px] items-center justify-center rounded-full bg-destructive/15 px-1 text-[9px] font-semibold text-destructive">
+                        {issueCount}
+                      </span>
+                    )}
+                  </span>
+                </TabsTrigger>
                 <TabsTrigger value="timeline">Timeline</TabsTrigger>
                 <TabsTrigger value="bids">Bids</TabsTrigger>
                 <TabsTrigger value="targeting">Targeting</TabsTrigger>
@@ -133,6 +146,9 @@ export default function App({ inspectable }: { inspectable: boolean }) {
                 />
               ) : (
                 <>
+                  <TabsContent value="issues" className="h-full">
+                    <IssuesView entity={selectedEntity} search={search} issues={issues} />
+                  </TabsContent>
                   <TabsContent value="timeline" className="h-full">
                     <TimelineView auctionId={auctionId} entity={selectedEntity} search={search} />
                   </TabsContent>

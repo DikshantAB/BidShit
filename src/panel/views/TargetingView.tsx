@@ -32,20 +32,20 @@ export function TargetingView({ entity }: { entity: string }) {
   return (
     <div className="h-full space-y-3 overflow-auto p-3">
       {race && (
-        <Alert variant="warning">
+        <Alert dismissible variant="warning">
           Race detected: GPT <code>refresh</code>/<code>display</code> ran before Prebid targeting was applied. The GAM
           request snapshot likely missed the <code>hb_*</code> keys.
         </Alert>
       )}
       {corr.unmatchedAdUnits.length + corr.unmatchedSlots.length > 0 && (
-        <Alert variant="warning">
+        <Alert dismissible variant="warning">
           Correlation mismatch: {corr.unmatchedAdUnits.length} ad unit code(s) and {corr.unmatchedSlots.length} GPT slot
           id(s) did not match. Prebid targeting may not reach the intended slot.
         </Alert>
       )}
 
       {hasPrebid && (
-        <Card className="p-3">
+        <Card dismissible className="p-3">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Prebid → ad server targeting (getAdserverTargeting / setTargeting)
           </div>
@@ -66,7 +66,7 @@ export function TargetingView({ entity }: { entity: string }) {
       )}
 
       {hasSlotTargeting && slot && (
-        <Card className="p-3">
+        <Card dismissible className="p-3">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             GPT slot targeting at request · {slot.slotElementId}
           </div>
@@ -75,7 +75,7 @@ export function TargetingView({ entity }: { entity: string }) {
       )}
 
       {hasGptPage && (
-        <Card className="p-3">
+        <Card dismissible className="p-3">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             GPT page-level targeting (pubads().setTargeting)
           </div>

@@ -155,28 +155,63 @@ export function MultiSelect({
   );
 }
 
+function DismissButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label="Dismiss"
+      className="absolute right-1.5 top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded text-[13px] leading-none text-muted-foreground hover:bg-accent hover:text-foreground"
+      onClick={onClick}
+    >
+      ×
+    </button>
+  );
+}
+
 // ---- Card --------------------------------------------------------------
-export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('rounded-lg border border-border bg-card', className)} {...props} />;
+export function Card({
+  className,
+  dismissible,
+  children,
+  ...props
+}: HTMLAttributes<HTMLDivElement> & { dismissible?: boolean }) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  return (
+    <div
+      className={cn('relative rounded-lg border border-border bg-card', dismissible && 'pr-7', className)}
+      {...props}
+    >
+      {dismissible && <DismissButton onClick={() => setHidden(true)} />}
+      {children}
+    </div>
+  );
 }
 
 // ---- Alert -------------------------------------------------------------
 export function Alert({
   className,
   variant = 'default',
+  dismissible,
   children,
 }: {
   className?: string;
   variant?: 'default' | 'warning' | 'destructive';
+  dismissible?: boolean;
   children: ReactNode;
 }) {
+  const [hidden, setHidden] = useState(false);
   const variants = {
     default: 'border-border bg-muted/40 text-foreground',
     warning: 'border-[hsl(var(--warning))]/40 bg-[hsl(var(--warning))]/10 text-[hsl(var(--warning))]',
     destructive: 'border-destructive/40 bg-destructive/10 text-destructive',
   };
+  if (hidden) return null;
   return (
-    <div className={cn('rounded-md border px-3 py-2 text-xs', variants[variant], className)}>{children}</div>
+    <div className={cn('relative rounded-md border px-3 py-2 text-xs', dismissible && 'pr-8', variants[variant], className)}>
+      {dismissible && <DismissButton onClick={() => setHidden(true)} />}
+      {children}
+    </div>
   );
 }
 

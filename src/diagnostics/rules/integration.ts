@@ -130,7 +130,7 @@ export const integrationRules: Rule[] = [
         const keys = Object.keys(map);
         if (!keys.length) {
           const end = lastOf(ctx.named('prebid', 'auctionEnd').filter((e) => e.ts <= env.ts));
-          const received = end && Array.isArray(payload(end).bidsReceived) ? payload(end).bidsReceived.length : 0;
+          const received = end ? arrLen(payload(end).bidsReceived) : 0;
           if (received) out.push(fromEvent(find('INT-07'), env, ctx, 'confirmed', 'empty setTargeting despite bids'));
         }
         for (const code of keys) {
@@ -185,7 +185,7 @@ export const integrationRules: Rule[] = [
     (ctx) => {
       const out: DiagnosticIssue[] = [];
       for (const env of ctx.named('prebid', 'auctionEnd')) {
-        const received = Array.isArray(payload(env).bidsReceived) ? payload(env).bidsReceived.length : 0;
+        const received = arrLen(payload(env).bidsReceived);
         if (received) continue;
         const req = ctx.named('gpt', 'slotRequested').find((e) => e.ts >= env.ts);
         if (!req) continue;
@@ -483,7 +483,7 @@ export const integrationRules: Rule[] = [
     (ctx) => {
       const out: DiagnosticIssue[] = [];
       for (const env of ctx.named('prebid', 'auctionEnd')) {
-        const bids = Array.isArray(payload(env).bidsReceived) ? payload(env).bidsReceived.length : 0;
+        const bids = arrLen(payload(env).bidsReceived);
         if (bids < 3) continue;
         const t = ctx.named('prebid', 'setTargeting').find((e) => e.ts >= env.ts);
         if (!t) continue;
@@ -545,7 +545,7 @@ export const integrationRules: Rule[] = [
     (ctx) => {
       const out: DiagnosticIssue[] = [];
       for (const env of ctx.named('prebid', 'auctionEnd')) {
-        const received = Array.isArray(payload(env).bidsReceived) ? payload(env).bidsReceived.length : 0;
+        const received = arrLen(payload(env).bidsReceived);
         if (!received) continue;
         if (ctx.session.status.pubadsReady && ctx.named('gpt', 'pubadsReady')[0]?.ts <= env.ts) continue;
         if (!ctx.session.status.gptPresent) continue;
@@ -637,6 +637,10 @@ export const integrationRules: Rule[] = [
 const BY_ID = new Map(integrationRules.map((r) => [r.id, r]));
 function find(id: string): RuleMeta {
   return BY_ID.get(id)!;
+}
+
+function arrLen(v: unknown): number {
+  return Array.isArray(v) ? v.length : 0;
 }
 
 function looksLikeUnitMap(root: Record<string, unknown>): boolean {
