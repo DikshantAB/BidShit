@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BidShitter OBS-01 — optional events are not failures</title>
+    <script async src="https://securepubads.g.doubleclick.net/tag/js/gpt.js" crossorigin="anonymous"></script>
+    <script>
+      window.googletag = window.googletag || { cmd: [] };
+
+      googletag.cmd.push(function () {
+        googletag
+          .defineSlot('/6355419/Travel', [[300, 250]], 'div-gpt-ad-obs-01')
+          .addService(googletag.pubads());
+        googletag.enableServices();
+        googletag.display('div-gpt-ad-obs-01');
+      });
+    </script>
+    <style>
+      body {
+        font-family: sans-serif;
+        max-width: 720px;
+        margin: 24px auto;
+        line-height: 1.45;
+      }
+      code {
+        background: #f3f3f3;
+        padding: 0 4px;
+      }
+      .spacer {
+        height: 2200px;
+        background: repeating-linear-gradient(#fafafa, #fafafa 40px, #eee 40px, #eee 41px);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>COMMON-OBS-01 repro</h1>
+    <p>
+      GPT-only page (no Prebid). The slot is far below the fold so Active View should not fire.
+      Open BidShitter on this page and <strong>reload</strong> so the hook sees boot.
+    </p>
+    <p>After <code>slotRenderEnded</code>, the Issues tab should show <code>COMMON-OBS-01</code> as <strong>Info</strong> for missing:</p>
+    <ul>
+      <li><code>bidWon</code> — not applicable (no Prebid)</li>
+      <li><code>slotOnload</code> — pending / not applicable unless a creative iframe loads</li>
+      <li><code>impressionViewable</code> — pending while this slot stays below the fold</li>
+    </ul>
+    <p>Those must <strong>not</strong> appear as critical/high failures. Scroll down to the slot if you want to see it fill.</p>
+    <div class="spacer">↓ slot is below this spacer ↓</div>
+    <div id="div-gpt-ad-obs-01" style="width: 300px; height: 250px"></div>
+  </body>
+</html>

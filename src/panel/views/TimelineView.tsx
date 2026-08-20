@@ -10,6 +10,7 @@ const channelTone: Record<string, string> = {
   gpt: 'border-l-[hsl(var(--warning))]',
   hook: 'border-l-muted-foreground',
   network: 'border-l-[hsl(var(--success))]',
+  cmp: 'border-l-[hsl(var(--warning))]',
 };
 
 /** Default Timeline event filter. Empty MultiSelect still means “all events”. */
@@ -17,6 +18,9 @@ const DEFAULT_TIMELINE_EVENTS = [
   'auctionInit',
   'auctionEnd',
   'auctionDebug',
+  'tcf2Enforcement',
+  'tcfapi-ping',
+  'tcfapi',
   'apiReady',
   'libLoaded',
   'display',
@@ -58,6 +62,7 @@ export function TimelineView({ auctionId, entity, search }: { auctionId: string;
           <option value="gpt">gpt</option>
           <option value="hook">hook</option>
           <option value="network">network</option>
+          <option value="cmp">cmp</option>
         </Select>
         <MultiSelect options={namesOptions} selected={names} onChange={setNames} allLabel="all events" />
         <div className="w-56">
@@ -97,6 +102,9 @@ export function EventTimelineList({ nodes }: { nodes: Envelope[] }) {
         <span className="flex items-center gap-1">
           <span className="h-2 w-2 rounded-sm bg-[hsl(var(--success))]" /> GAM HTTP
         </span>
+        <span className="flex items-center gap-1">
+          <span className="h-2 w-2 rounded-sm bg-[hsl(var(--warning))]" /> CMP / TCF
+        </span>
       </div>
       <ol className="space-y-1">
         {nodes.map((n) => (
@@ -110,6 +118,7 @@ export function EventTimelineList({ nodes }: { nodes: Envelope[] }) {
 export function TimelineNode({ env, tOffset }: { env: Envelope; tOffset: number }) {
   const [open, setOpen] = useState(false);
   const hasPayload = env.payload != null && !(typeof env.payload === 'object' && Object.keys(env.payload as object).length === 0);
+  const tcf = env.channel === 'cmp' && env.payload && typeof env.payload === 'object' ? (env.payload as Record<string, unknown>) : undefined;
   return (
     <li className={cn('rounded-md border border-border border-l-2 bg-card', channelTone[env.channel])}>
       <button
@@ -121,7 +130,7 @@ export function TimelineNode({ env, tOffset }: { env: Envelope; tOffset: number 
         </span>
         <Badge
           variant={
-            env.channel === 'gpt'
+            env.channel === 'gpt' || env.channel === 'cmp'
               ? 'warning'
               : env.channel === 'prebid'
                 ? 'default'
@@ -134,6 +143,15 @@ export function TimelineNode({ env, tOffset }: { env: Envelope; tOffset: number 
         </Badge>
         <Badge variant="outline">{env.kind}</Badge>
         <span className="font-medium">{env.name}</span>
+        {typeof tcf?.eventStatus === 'string' && tcf.eventStatus && (
+          <Badge variant="outline">{tcf.eventStatus}</Badge>
+        )}
+        {typeof tcf?.cmpStatus === 'string' && tcf.cmpStatus && (
+          <Badge variant={tcf.cmpStatus === 'stub' ? 'warning' : 'outline'}>{String(tcf.cmpStatus)}</Badge>
+        )}
+        {env.name === 'tcfapi-ping' && tcf?.cmpLoaded === false && (
+          <span className="truncate text-[10px] text-muted-foreground">stub</span>
+        )}
         {env.slotElementId && (
           <span className="truncate text-[10px] text-muted-foreground">slot: {env.slotElementId}</span>
         )}

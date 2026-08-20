@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BidShitter — Common GPT/GAM issue reproductions</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #0b1020;
+        color: #e8ecf8;
+      }
+
+      main {
+        width: min(1100px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0 64px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin-top: 0;
+      }
+
+      .lead {
+        max-width: 860px;
+        color: #b8c1d9;
+        line-height: 1.55;
+      }
+
+      .notice,
+      .active,
+      .console,
+      .slots {
+        border: 1px solid #2b3551;
+        border-radius: 12px;
+        background: #121a2f;
+        padding: 16px;
+      }
+
+      .notice,
+      .active {
+        margin: 20px 0;
+      }
+
+      .notice strong,
+      .active strong {
+        color: #9fc3ff;
+      }
+
+      .issue-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 12px;
+        margin: 20px 0;
+      }
+
+      button {
+        min-height: 92px;
+        border: 1px solid #344263;
+        border-radius: 10px;
+        padding: 13px;
+        background: #17213a;
+        color: inherit;
+        cursor: pointer;
+        text-align: left;
+        transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+      }
+
+      button:hover,
+      button:focus-visible {
+        border-color: #76a7ff;
+        background: #1d2b4c;
+        outline: none;
+        transform: translateY(-1px);
+      }
+
+      button.selected {
+        border-color: #76a7ff;
+        box-shadow: 0 0 0 2px rgb(118 167 255 / 22%);
+      }
+
+      button code {
+        display: block;
+        margin-bottom: 7px;
+        color: #9fc3ff;
+        font-weight: 700;
+      }
+
+      button span {
+        color: #d7ddef;
+        line-height: 1.35;
+      }
+
+      .active {
+        border-color: #486594;
+      }
+
+      .active[data-state="idle"] {
+        display: none;
+      }
+
+      .active p:last-child {
+        margin-bottom: 0;
+      }
+
+      .pill {
+        display: inline-block;
+        margin-left: 8px;
+        border-radius: 999px;
+        background: #26375d;
+        padding: 3px 9px;
+        color: #cfe0ff;
+        font-size: 12px;
+        vertical-align: middle;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 18px 0;
+      }
+
+      .actions button {
+        min-height: auto;
+        width: auto;
+      }
+
+      .console {
+        min-height: 190px;
+        max-height: 440px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #c8d2e9;
+        font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .slots {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 18px;
+        min-height: 280px;
+      }
+
+      .slot-shell {
+        min-width: 300px;
+      }
+
+      .slot-shell code {
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .slot-target {
+        width: 300px;
+        min-height: 250px;
+        border: 1px dashed #607095;
+        background: #fff;
+        color: #17213a;
+      }
+
+      code {
+        color: #b8d2ff;
+      }
+    </style>
+    <script>
+      "use strict";
+
+      const GPT_CDN = "https://securepubads.g.doubleclick.net/tag/js/gpt.js";
+      const SAMPLE_AD_UNIT = "/6355419/Travel/Europe/France/Paris";
+      const NO_FILL_AD_UNIT = "/6355419/BidShitter/Definitely_No_Fill_123x45";
+      const issueId = new URLSearchParams(location.search).get("issue");
+
+      window.googletag = window.googletag || { cmd: [] };
+      window.googletag.cmd = window.googletag.cmd || [];
+
+      const issueDefinitions = [
+        {
+          id: "COMMON-GPT-01",
+          title: "GPT does not load or become ready",
+          expected: "GPT command intent and the official script request are visible, but an intentionally incorrect integrity hash blocks gpt.js. Wait at least 10 seconds for the boot rule."
+        },
+        {
+          id: "COMMON-GPT-02",
+          title: "GPT slot is not defined or attached correctly",
+          expected: "defineSlot returns a valid slot, but addService(googletag.pubads()) is deliberately omitted."
+        },
+        {
+          id: "COMMON-GPT-03",
+          title: "Initial load disabled but refresh never occurs",
+          expected: "Initial load is disabled before enableServices; the slot is displayed, but refresh is never called and slotRequested should not fire."
+        },
+        {
+          id: "COMMON-GPT-04",
+          title: "Refresh occurs before display",
+          expected: "A live PubAds slot is passed explicitly to refresh before its display call. The page deliberately never displays it afterward."
+        },
+        {
+          id: "COMMON-GPT-05",
+          title: "Duplicate initial GAM requests",
+          expected: "Initial load remains enabled, display starts the first request, and an immediate refresh starts a second request for the same slot."
+        },
+        {
+          id: "COMMON-GPT-06",
+          title: "Refresh requests a stale or destroyed slot",
+          expected: "The slot is displayed and destroyed, then the stale slot object is explicitly passed to refresh."
+        },
+        {
+          id: "COMMON-GPT-07",
+          title: "GAM request fails or never completes",
+          expected: "A scenario-only Content Security Policy allows the official gpt.js file but blocks connection, frame, and image transports used by the GAM request. Expect slotRequested without a completed response."
+        },
+        {
+          id: "COMMON-GPT-08",
+          title: "GAM responds but rendering never completes",
+          expected: "The slot is synchronously destroyed inside its first slotResponseReceived listener, before the normal render phase. Wait for the render threshold."
+        },
+        {
+          id: "COMMON-GPT-09",
+          title: "GAM returns no fill",
+          expected: "An intentionally nonexistent ad-unit path and unusual 123x45 size should produce slotRenderEnded with isEmpty=true."
+        }
+      ];
+
+      const GPT_EVENTS = [
+        "slotRequested",
+        "slotResponseReceived",
+        "slotRenderEnded",
+        "slotOnload",
+        "impressionViewable",
+        "slotVisibilityChanged",
+        "rewardedSlotReady",
+        "rewardedSlotGranted",
+        "rewardedSlotClosed",
+        "rewardedSlotVideoCompleted",
+        "gameManualInterstitialSlotReady",
+        "gameManualInterstitialSlotClosed"
+      ];
+
+      let logElement;
+
+      function safeJson(value) {
+        const seen = new WeakSet();
+        try {
+          return JSON.stringify(value, function (key, item) {
+            if (item && typeof item === "object") {
+              if (seen.has(item)) return "[circular]";
+              seen.add(item);
+            }
+            return item;
+          });
+        } catch (error) {
+          return String(value);
+        }
+      }
+
+      function log(message, data) {
+        const line = `[${new Date().toLocaleTimeString()}] ${message}${data === undefined ? "" : ` ${safeJson(data)}`}`;
+        console.log("[gpt-repro]", message, data === undefined ? "" : data);
+        if (!logElement) return;
+        logElement.textContent += `${line}\n`;
+        logElement.scrollTop = logElement.scrollHeight;
+      }
+
+      function navigateToIssue(id) {
+        const url = new URL(location.href);
+        url.search = "";
+        url.searchParams.set("issue", id);
+        location.href = url.href;
+      }
+
+      function clearIssue() {
+        location.href = location.pathname;
+      }
+
+      function slotId(suffix) {
+        return `div-gpt-bidshitter-${suffix}`;
+      }
+
+      function ensureSlotElement(id, width, height) {
+        let element = document.getElementById(id);
+        if (element) return element;
+        const shell = document.createElement("div");
+        const label = document.createElement("code");
+        element = document.createElement("div");
+        shell.className = "slot-shell";
+        label.textContent = id;
+        element.id = id;
+        element.className = "slot-target";
+        element.style.width = `${width || 300}px`;
+        element.style.minHeight = `${height || 250}px`;
+        shell.append(label, element);
+        document.getElementById("slot-stage").appendChild(shell);
+        return element;
+      }
+
+      function describeSlot(slot) {
+        if (!slot) return null;
+        let targeting = {};
+        try {
+          const keys = slot.getTargetingKeys ? slot.getTargetingKeys() : [];
+          keys.forEach(function (key) {
+            targeting[key] = slot.getTargeting(key);
+          });
+        } catch (error) {
+          targeting = { readError: String(error) };
+        }
+        return {
+          elementId: slot.getSlotElementId && slot.getSlotElementId(),
+          adUnitPath: slot.getAdUnitPath && slot.getAdUnitPath(),
+          targeting: targeting
+        };
+      }
+
+      function registerEventLoggers(pubads) {
+        GPT_EVENTS.forEach(function (eventName) {
+          try {
+            pubads.addEventListener(eventName, function (event) {
+              const eventData = {
+                slot: describeSlot(event.slot)
+              };
+              [
+                "isEmpty",
+                "size",
+                "lineItemId",
+                "creativeId",
+                "responseIdentifier",
+                "slotContentChanged",
+                "inViewPercentage"
+              ].forEach(function (key) {
+                if (event[key] !== undefined) eventData[key] = event[key];
+              });
+              log(`GPT event: ${eventName}`, eventData);
+            });
+          } catch (error) {
+            log(`Could not subscribe to ${eventName}`, String(error));
+          }
+        });
+      }
+
+      function useDisabledInitialLoad() {
+        googletag.setConfig({ disableInitialLoad: true });
+        log("Configured disableInitialLoad before enableServices");
+      }
+
+      function defineAttachedSlot(path, size, id) {
+        ensureSlotElement(id, size[0], size[1]);
+        const slot = googletag.defineSlot(path, size, id);
+        if (slot) slot.addService(googletag.pubads());
+        log("defineSlot result", describeSlot(slot));
+        return slot;
+      }
+
+      function displaySlot(id) {
+        googletag.display(id);
+        log("Called googletag.display", id);
+      }
+
+      function applyGamBlockingCsp() {
+        const meta = document.createElement("meta");
+        meta.httpEquiv = "Content-Security-Policy";
+        meta.content = [
+          "default-src 'none'",
+          "script-src 'unsafe-inline' 'unsafe-eval' https://securepubads.g.doubleclick.net",
+          "style-src 'unsafe-inline'",
+          "connect-src 'none'",
+          "img-src data:",
+          "frame-src 'none'",
+          "font-src 'none'"
+        ].join("; ");
+        document.head.prepend(meta);
+        log("Applied scenario-only CSP that allows gpt.js and blocks GAM transport");
+      }
+
+      function loadGpt(shouldFailIntegrity) {
+        const script = document.createElement("script");
+        script.async = true;
+        script.src = GPT_CDN;
+        script.crossOrigin = "anonymous";
+        if (shouldFailIntegrity) {
+          script.integrity = "sha384-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        }
+        script.addEventListener("load", function () {
+          log("Official GPT script load event fired", { apiReady: Boolean(googletag.apiReady) });
+        });
+        script.addEventListener("error", function () {
+          log("Official GPT script failed", { intentionalIntegrityFailure: shouldFailIntegrity, src: GPT_CDN });
+        });
+        document.head.appendChild(script);
+        log("Requested official GPT script", { src: GPT_CDN, intentionalIntegrityFailure: shouldFailIntegrity });
+      }
+
+      function runScenario(id) {
+        const pubads = googletag.pubads();
+        registerEventLoggers(pubads);
+        log("GPT API is ready; starting scenario", {
+          issue: id,
+          apiReady: googletag.apiReady,
+          pubadsReady: googletag.pubadsReady,
+          version: googletag.getVersion && googletag.getVersion()
+        });
+
+        switch (id) {
+          case "COMMON-GPT-02": {
+            const id = slotId("unattached");
+            ensureSlotElement(id, 300, 250);
+            const slot = googletag.defineSlot(SAMPLE_AD_UNIT, [300, 250], id);
+            log("Defined slot and deliberately omitted addService(pubads)", describeSlot(slot));
+            break;
+          }
+
+          case "COMMON-GPT-03": {
+            const id = slotId("no-refresh");
+            useDisabledInitialLoad();
+            defineAttachedSlot(SAMPLE_AD_UNIT, [300, 250], id);
+            googletag.enableServices();
+            displaySlot(id);
+            log("Deliberately leaving the displayed slot without refresh");
+            break;
+          }
+
+          case "COMMON-GPT-04": {
+            const id = slotId("refresh-before-display");
+            useDisabledInitialLoad();
+            const slot = defineAttachedSlot(SAMPLE_AD_UNIT, [300, 250], id);
+            googletag.enableServices();
+            pubads.refresh([slot]);
+            log("Called refresh with an explicit slot before display", describeSlot(slot));
+            break;
+          }
+
+          case "COMMON-GPT-05": {
+            const id = slotId("duplicate-request");
+            const slot = defineAttachedSlot(SAMPLE_AD_UNIT, [300, 250], id);
+            googletag.enableServices();
+            displaySlot(id);
+            window.setTimeout(function () {
+              pubads.refresh([slot]);
+              log("Issued immediate second request with refresh", describeSlot(slot));
+            }, 250);
+            break;
+          }
+
+          case "COMMON-GPT-06": {
+            const id = slotId("destroyed-refresh");
+            useDisabledInitialLoad();
+            const slot = defineAttachedSlot(SAMPLE_AD_UNIT, [300, 250], id);
+            googletag.enableServices();
+            displaySlot(id);
+            const destroyed = googletag.destroySlots([slot]);
+            log("Destroyed displayed slot", { destroyed: destroyed, slot: describeSlot(slot) });
+            pubads.refresh([slot]);
+            log("Passed destroyed slot object to refresh", describeSlot(slot));
+            break;
+          }
+
+          case "COMMON-GPT-07": {
+            const id = slotId("blocked-request");
+            const slot = defineAttachedSlot(SAMPLE_AD_UNIT, [300, 250], id);
+            googletag.enableServices();
+            displaySlot(id);
+            log("Displayed slot under the transport-blocking CSP", describeSlot(slot));
+            break;
+          }
+
+          case "COMMON-GPT-08": {
+            const id = slotId("destroy-after-response");
+            const slot = defineAttachedSlot(SAMPLE_AD_UNIT, [300, 250], id);
+            let destroyed = false;
+            pubads.addEventListener("slotResponseReceived", function (event) {
+              if (destroyed || event.slot !== slot) return;
+              destroyed = true;
+              const result = googletag.destroySlots([slot]);
+              log("Destroyed slot synchronously inside slotResponseReceived", { destroyed: result, slot: describeSlot(slot) });
+            });
+            googletag.enableServices();
+            displaySlot(id);
+            break;
+          }
+
+          case "COMMON-GPT-09": {
+            const id = slotId("no-fill");
+            const slot = defineAttachedSlot(NO_FILL_AD_UNIT, [123, 45], id);
+            googletag.enableServices();
+            displaySlot(id);
+            log("Requested intentionally nonexistent inventory", describeSlot(slot));
+            break;
+          }
+
+          default:
+            log("No matching scenario selected", id);
+        }
+      }
+
+      function renderUi() {
+        const selected = issueDefinitions.find(function (item) {
+          return item.id === issueId;
+        });
+        const grid = document.getElementById("issue-grid");
+        logElement = document.getElementById("event-log");
+
+        issueDefinitions.forEach(function (item) {
+          const button = document.createElement("button");
+          const code = document.createElement("code");
+          const title = document.createElement("span");
+          code.textContent = item.id;
+          title.textContent = item.title;
+          button.type = "button";
+          button.append(code, title);
+          button.classList.toggle("selected", item.id === issueId);
+          button.addEventListener("click", function () {
+            navigateToIssue(item.id);
+          });
+          grid.appendChild(button);
+        });
+
+        document.getElementById("repeat-scenario").addEventListener("click", function () {
+          location.reload();
+        });
+        document.getElementById("clear-scenario").addEventListener("click", clearIssue);
+
+        if (!selected) return;
+        const active = document.getElementById("active-scenario");
+        active.dataset.state = "active";
+        document.getElementById("active-id").textContent = selected.id;
+        document.getElementById("active-title").textContent = selected.title;
+        document.getElementById("active-expected").textContent = selected.expected;
+        log("Fresh page load selected scenario", selected.id);
+
+        if (selected.id === "COMMON-GPT-01") {
+          googletag.cmd.push(function () {
+            log("This queued GPT command should never run in GPT-01");
+          });
+          loadGpt(true);
+          window.setTimeout(function () {
+            log("GPT-01 checkpoint", {
+              apiReady: Boolean(googletag.apiReady),
+              pubadsReady: Boolean(googletag.pubadsReady),
+              queuedCommands: googletag.cmd && googletag.cmd.length
+            });
+          }, 10000);
+          return;
+        }
+
+        if (selected.id === "COMMON-GPT-07") applyGamBlockingCsp();
+        googletag.cmd.push(function () {
+          runScenario(selected.id);
+        });
+        loadGpt(false);
+      }
+
+      window.addEventListener("DOMContentLoaded", renderUi);
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1>Common GPT/GAM issue reproductions</h1>
+      <p class="lead">
+        Open BidShitter DevTools on this page, then click an issue. Every button performs a full page reload with one isolated GPT scenario so the extension can observe setup from boot. The page loads GPT from
+        <code>https://securepubads.g.doubleclick.net/tag/js/gpt.js</code> and uses Google's public sample network only for lifecycle requests.
+      </p>
+
+      <div class="notice">
+        <strong>Testing workflow:</strong> keep DevTools open, click one scenario, wait for the relevant boot/network/render threshold, and compare the extension with the page-side event log. Browser extensions, privacy settings, and GAM availability can add environmental failures; reload a scenario before concluding it is nondeterministic.
+      </div>
+
+      <section aria-labelledby="scenario-heading">
+        <h2 id="scenario-heading">Choose an isolated scenario</h2>
+        <div id="issue-grid" class="issue-grid"></div>
+      </section>
+
+      <section id="active-scenario" class="active" data-state="idle" aria-live="polite">
+        <h2>
+          <span id="active-id"></span>
+          <span class="pill">running</span>
+        </h2>
+        <p><strong id="active-title"></strong></p>
+        <p id="active-expected"></p>
+      </section>
+
+      <div class="actions">
+        <button id="repeat-scenario" type="button">Repeat selected scenario</button>
+        <button id="clear-scenario" type="button">Return to idle page</button>
+      </div>
+
+      <h2>Page-side GPT event log</h2>
+      <pre id="event-log" class="console">Select an issue to begin. The BidShitter panel remains the source of truth.&#10;</pre>
+
+      <h2>GPT slot stage</h2>
+      <div id="slot-stage" class="slots"></div>
+    </main>
+  </body>
+</html>

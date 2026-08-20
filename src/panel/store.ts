@@ -23,6 +23,8 @@ function emptyStatus(): StatusFlags {
     hookLate: false,
     prebidPresent: false,
     gptPresent: false,
+    cmpPresent: false,
+    cmpConnected: false,
     libLoaded: false,
     apiReady: false,
     pubadsReady: false,
@@ -169,7 +171,10 @@ class Store {
     if (s.envelopes.length > BUFFER_CAP) s.envelopes.splice(0, s.envelopes.length - BUFFER_CAP);
 
     if (env.channel === 'prebid') s.status.prebidPresent = true;
-    if (env.channel === 'gpt' || env.channel === 'network') s.status.gptPresent = true;
+    if (env.channel === 'gpt') s.status.gptPresent = true;
+    if (env.channel === 'cmp') s.status.cmpPresent = true;
+    if (env.channel === 'cmp' && env.name === 'tcfapi') s.status.cmpConnected = true;
+    if (env.channel === 'network' && env.name === 'gamRequest') s.status.gptPresent = true;
 
     if (env.kind === 'status') this.applyStatus(env);
     else if (env.kind === 'snapshot') this.applySnapshot(env);
@@ -239,19 +244,23 @@ class Store {
       }
     } else if (env.channel === 'gpt') {
       if (env.name === 'display') {
-        // display(divOrSlot)
         const target = args[0];
-        const id = typeof target === 'string' ? target : target?.slotElementId;
+        const id = env.slotElementId || (typeof target === 'string' ? target : target?.slotElementId);
         if (id) this.upsertSlot(id).displayed = true;
       } else if (env.name === 'refresh') {
-        const slotsArg = args[0];
-        if (Array.isArray(slotsArg)) {
-          for (const sl of slotsArg) {
-            const id = sl?.slotElementId;
-            if (id) this.upsertSlot(id).refreshed = true;
-          }
+        const recorded = Array.isArray((env.payload as any)?.slotIds) ? (env.payload as any).slotIds : [];
+        if (recorded.length) {
+          for (const id of recorded) if (id) this.upsertSlot(String(id)).refreshed = true;
         } else {
-          for (const slot of s.slots.values()) slot.refreshed = true;
+          const slotsArg = args[0];
+          if (Array.isArray(slotsArg)) {
+            for (const sl of slotsArg) {
+              const id = sl?.slotElementId;
+              if (id) this.upsertSlot(id).refreshed = true;
+            }
+          } else {
+            for (const slot of s.slots.values()) slot.refreshed = true;
+          }
         }
       } else if (env.name === 'setTargeting') {
         // pubads-level page targeting: setTargeting(key, value)

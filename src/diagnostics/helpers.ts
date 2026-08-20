@@ -1,199 +1,118 @@
-import type { Envelope } from '../shared/types';
-import type { Confidence, DiagnosticIssue, DiagContext, EvidenceItem, Rule, RuleMeta, Severity } from './types';
+import type { Envelope, SessionState, SlotRecord } from '../shared/types';
+import type { Confidence, DiagnosticIssue, IssueEvidence } from './types';
 
-export function rec(v: unknown): Record<string, unknown> {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+export const FLOOR_REJECTION = 'Bid does not meet price floor';
+export const PREBID_READY_MS = 10_000;
+export const AUCTION_GRACE_MS = 1_500;
+export const DEFAULT_AUCTION_TIMEOUT_MS = 3_000;
+/** display() then refresh() inside this window is treated as a duplicate first-request (COMMON-GPT-05). */
+export const GPT_DUP_REQUEST_MS = 2_000;
+/** Pair bidderError / beforeBidderHttp with a DevTools HAR row inside this window. */
+export const NET_MATCH_MS = 8_000;
+
+export function named(session: SessionState, channel: Envelope['channel'], name: string): Envelope[] {
+  return session.envelopes.filter((e) => e.channel === channel && e.name === name);
 }
 
-export function arr(v: unknown): unknown[] {
-  return Array.isArray(v) ? v : [];
+export function apis(session: SessionState, channel: Envelope['channel'], name: string): Envelope[] {
+  return session.envelopes.filter((e) => e.kind === 'api' && e.channel === channel && e.name === name);
 }
 
-export function str(v: unknown): string | undefined {
-  if (typeof v === 'string' && v.trim()) return v;
-  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+export function forSlot(session: SessionState, slotId: string): Envelope[] {
+  return session.envelopes.filter((e) => e.slotElementId === slotId || e.adUnitCode === slotId);
+}
+
+export function lastNamed(
+  session: SessionState,
+  channel: Envelope['channel'],
+  name: string,
+  slotId?: string
+): Envelope | undefined {
+  const list = slotId
+    ? named(session, channel, name).filter((e) => e.slotElementId === slotId || e.adUnitCode === slotId)
+    : named(session, channel, name);
+  return list[list.length - 1];
+}
+
+export function rec(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+export function arr(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+export function str(value: unknown): string | undefined {
+  if (value == null || value === '') return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return undefined;
 }
 
-export function num(v: unknown): number | undefined {
-  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+export function num(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return undefined;
 }
 
-export function bool(v: unknown): boolean | undefined {
-  return typeof v === 'boolean' ? v : undefined;
+export function payload(env: Envelope): Record<string, unknown> {
+  return rec(env.payload);
 }
 
-export function payload(env?: Envelope): Record<string, unknown> {
-  return rec(env?.payload);
+/** Event payloads that are a single object or an array of objects (e.g. bidTimeout). */
+export function payloadItems(env: Envelope): Record<string, unknown>[] {
+  if (Array.isArray(env.payload)) return env.payload.map(rec);
+  const p = rec(env.payload);
+  return Object.keys(p).length ? [p] : [];
 }
 
-export function apiArgs(env?: Envelope): unknown[] {
+export function apiArgs(env: Envelope): unknown[] {
   return arr(payload(env).args);
 }
 
-export function bidOf(env?: Envelope): Record<string, unknown> {
+export function bidOf(env: Envelope): Record<string, unknown> {
   const p = payload(env);
   const nested = rec(p.bid);
   return Object.keys(nested).length ? nested : p;
 }
 
-export function rejectionReason(env?: Envelope): string {
-  const p = payload(env);
+export function bidderOf(obj: Record<string, unknown>): string | undefined {
+  return str(obj.bidder) || str(obj.bidderCode);
+}
+
+export function requestIdOf(obj: Record<string, unknown>): string | undefined {
+  return str(obj.requestId) || str(obj.bidId) || str(obj.bidderRequestId);
+}
+
+export function rejectionReason(env: Envelope): string | undefined {
   const bid = bidOf(env);
-  return String(p.reason ?? p.rejectionReason ?? bid.rejectionReason ?? '');
+  return str(bid.rejectionReason) || str(bid.reason) || str(bid.statusMessage) || str(payload(env).reason);
 }
 
-export function bidderOf(env?: Envelope): string | undefined {
-  const p = payload(env);
-  const bid = bidOf(env);
-  return str(bid.bidderCode) || str(bid.bidder) || str(p.bidderCode) || str(p.bidder);
+export function bootTs(session: SessionState): number {
+  return named(session, 'hook', 'hook-ready')[0]?.ts ?? session.envelopes[0]?.ts ?? Date.now();
 }
 
-export function adIdOf(env?: Envelope): string | undefined {
-  const bid = bidOf(env);
-  return str(bid.adId) || str(payload(env).adId);
+export function waited(fromTs: number, ms: number): boolean {
+  return Date.now() - fromTs >= ms;
 }
 
-export function requestIdOf(env?: Envelope): string | undefined {
-  const bid = bidOf(env);
-  return str(bid.requestId) || str(payload(env).requestId);
-}
-
-export function targetingMap(v: unknown): Record<string, unknown> {
-  return rec(v);
-}
-
-export function hbKeys(map: Record<string, unknown>): string[] {
-  return Object.keys(map).filter((k) => k === 'hb' || k.startsWith('hb_'));
-}
-
-export function hasHb(map: Record<string, unknown>): boolean {
-  return hbKeys(map).length > 0;
-}
-
-export function evidenceFrom(env: Envelope, summary: string): EvidenceItem {
-  return {
-    eventType: `${env.channel}:${env.name}`,
-    timestamp: env.ts,
-    summary,
-  };
-}
-
-export function issue(
-  rule: RuleMeta,
-  ctx: DiagContext,
-  opts: {
-    confidence: Confidence;
-    evidence: EvidenceItem[];
-    slotId?: string;
-    auctionId?: string;
-    adUnitCode?: string;
-    cycleId?: string;
-    explanation?: string;
+export function auctionTimeoutMs(session: SessionState, auctionId?: string): number {
+  if (auctionId) {
+    const auction = session.auctions.get(auctionId);
+    if (typeof auction?.timeout === 'number' && auction.timeout > 0) return auction.timeout;
+    const init = named(session, 'prebid', 'auctionInit').find((e) => e.auctionId === auctionId);
+    const t = init ? num(payload(init).timeout) : undefined;
+    if (t != null && t > 0) return t;
   }
-): DiagnosticIssue {
-  const ev = opts.evidence[0];
-  return {
-    ruleId: rule.id,
-    title: rule.title,
-    severity: rule.severity,
-    confidence: opts.confidence,
-    scope: rule.scope,
-    slotId: opts.slotId,
-    auctionId: opts.auctionId,
-    adUnitCode: opts.adUnitCode,
-    cycleId: opts.cycleId,
-    detectedAt: ev?.timestamp ?? ctx.now,
-    evidence: opts.evidence,
-    explanation: opts.explanation ?? rule.explanation,
-    checks: rule.checks,
-    recommendations: rule.recommendations,
-  };
+  const cfg = rec(session.snapshots.readConfig);
+  const configured = num(cfg.bidderTimeout);
+  if (configured != null && configured > 0) return configured;
+  return DEFAULT_AUCTION_TIMEOUT_MS;
 }
 
-export function defineRule(meta: RuleMeta, evaluate: Rule['evaluate']): Rule {
-  return { ...meta, evaluate };
-}
-
-export function fromEvent(
-  meta: RuleMeta,
-  env: Envelope,
-  ctx: DiagContext,
-  confidence: Confidence,
-  summary: string,
-  extra?: Partial<Pick<DiagnosticIssue, 'slotId' | 'auctionId' | 'adUnitCode' | 'explanation'>>
-): DiagnosticIssue {
+export function auctionCodes(env: Envelope): string[] {
   const p = payload(env);
-  return issue(meta, ctx, {
-    confidence,
-    evidence: [evidenceFrom(env, summary)],
-    slotId: extra?.slotId ?? env.slotElementId,
-    auctionId: extra?.auctionId ?? env.auctionId ?? str(p.auctionId),
-    adUnitCode: extra?.adUnitCode ?? env.adUnitCode ?? str(bidOf(env).adUnitCode),
-    explanation: extra?.explanation,
-  });
-}
-
-export function rejectMatching(
-  meta: RuleMeta,
-  needle: string | RegExp,
-  confidence: Confidence = 'confirmed'
-): Rule {
-  const test =
-    typeof needle === 'string'
-      ? (r: string) => r.toLowerCase().includes(needle.toLowerCase())
-      : (r: string) => needle.test(r);
-  return defineRule(meta, (ctx) => {
-    const out: DiagnosticIssue[] = [];
-    for (const env of ctx.named('prebid', 'bidRejected')) {
-      const reason = rejectionReason(env);
-      if (!test(reason)) continue;
-      out.push(fromEvent(meta, env, ctx, confidence, `bidRejected: ${reason || meta.title}`));
-    }
-    return out;
-  });
-}
-
-export function firstBy<T>(items: T[], pred: (item: T) => boolean): T | undefined {
-  for (const item of items) if (pred(item)) return item;
-}
-
-export function lastOf<T>(items: T[]): T | undefined {
-  return items.length ? items[items.length - 1] : undefined;
-}
-
-export function groupBy<T>(items: T[], keyFn: (item: T) => string | undefined): Map<string, T[]> {
-  const map = new Map<string, T[]>();
-  for (const item of items) {
-    const key = keyFn(item);
-    if (!key) continue;
-    const list = map.get(key);
-    if (list) list.push(item);
-    else map.set(key, [item]);
-  }
-  return map;
-}
-
-export function unique(values: Array<string | undefined>): string[] {
-  return [...new Set(values.filter((v): v is string => !!v))];
-}
-
-export function envFingerprint(env: Envelope): string {
-  const bid = bidOf(env);
-  return [
-    env.channel,
-    env.name,
-    env.auctionId ?? '',
-    env.adUnitCode ?? '',
-    env.slotElementId ?? '',
-    requestIdOf(env) ?? '',
-    adIdOf(env) ?? '',
-    bidderOf(env) ?? '',
-    str(bid.auctionId) ?? '',
-  ].join('|');
-}
-
-export function codesOfAuctionPayload(p: Record<string, unknown>): string[] {
   const fromCodes = arr(p.adUnitCodes).map((c) => str(c)).filter((c): c is string => !!c);
   if (fromCodes.length) return fromCodes;
   return arr(p.adUnits)
@@ -201,22 +120,89 @@ export function codesOfAuctionPayload(p: Record<string, unknown>): string[] {
     .filter((c): c is string => !!c);
 }
 
-export function isHbKey(key: string): boolean {
-  return key === 'hb' || key.startsWith('hb_');
+export function adUnitsFrom(env: Envelope): Record<string, unknown>[] {
+  const p = payload(env);
+  const fromEvent = arr(p.adUnits).map(rec).filter((u) => str(u.code));
+  if (fromEvent.length) return fromEvent;
+  const arg = apiArgs(env)[0];
+  const list = Array.isArray(arg) ? arg : arg ? [arg] : [];
+  return list.map(rec).filter((u) => str(u.code));
 }
 
-export const REQUIRED_HB_KEYS = ['hb_bidder', 'hb_pb', 'hb_adid', 'hb_size'] as const;
+export function requestBidsCodes(env: Envelope): string[] {
+  const arg = rec(apiArgs(env)[0]);
+  const fromOpt = arr(arg.adUnitCodes)
+    .concat(arg.adUnitCodes != null && !Array.isArray(arg.adUnitCodes) ? [arg.adUnitCodes] : [])
+    .map((c) => str(c))
+    .filter((c): c is string => !!c);
+  if (fromOpt.length) return fromOpt;
+  const fromUnits = arr(arg.adUnits)
+    .map((u) => str(rec(u).code))
+    .filter((c): c is string => !!c);
+  if (fromUnits.length) return fromUnits;
+  return auctionCodes(env);
+}
 
-export function confidenceForAbsence(ctx: DiagContext): Confidence {
-  if (!ctx.observedFromStart) return 'possible';
+export function slotIdForCode(session: SessionState, code: string): string | undefined {
+  if (session.slots.has(code)) return code;
+  for (const slot of session.slots.values()) {
+    if (slot.adUnitPath === code) return slot.slotElementId;
+  }
+  return undefined;
+}
+
+/** Slot + Prebid targeting maps that may contain hb_* keys. */
+export function slotTargeting(session: SessionState, slot: SlotRecord): Record<string, unknown> {
+  return {
+    ...(session.prebidTargeting[slot.slotElementId] || {}),
+    ...(slot.targeting || {}),
+    ...(slot.targetingAtRequest || {}),
+  };
+}
+
+export function firstHb(map: Record<string, unknown>, key: string): string | undefined {
+  const value = map[key];
+  if (value == null || value === '') return undefined;
+  return Array.isArray(value) ? String(value[0] ?? '') || undefined : String(value);
+}
+
+export function hasPrebidTargeting(session: SessionState, slot: SlotRecord): boolean {
+  const map = slotTargeting(session, slot);
+  return !!(firstHb(map, 'hb_adid') || firstHb(map, 'hb_bidder'));
+}
+
+/** Bids with a positive CPM for one ad unit. Shared by PB-11 and the integration family. */
+export function eligibleBids(list: unknown[], code: string): Record<string, unknown>[] {
+  return arr(list)
+    .map(rec)
+    .filter((b) => str(b.adUnitCode) === code)
+    .filter((b) => {
+      const cpm = num(b.cpm);
+      return cpm != null && cpm > 0;
+    });
+}
+
+export function hbKeysOf(map: Record<string, unknown>): string[] {
+  return Object.keys(map).filter((k) => k.startsWith('hb_') && !!firstHb(map, k));
+}
+
+export function hasHbKeys(map: Record<string, unknown>): boolean {
+  return hbKeysOf(map).length > 0;
+}
+
+export function absenceConfidence(session: SessionState): Confidence {
+  if (session.status.hookLate || session.dropped > 0) return 'possible';
   return 'likely';
 }
 
-export function severityInfoIfLate(ctx: DiagContext, severity: Severity): Severity {
-  return ctx.observedFromStart ? severity : severity === 'info' ? 'info' : severity;
+export function evidenceFrom(env: Envelope | undefined, summary: string, eventType?: string): IssueEvidence {
+  return {
+    timestamp: env?.ts || Date.now(),
+    eventType: eventType || env?.name,
+    summary,
+  };
 }
 
-export function slotTargeting(env: Envelope): Record<string, unknown> {
-  const p = payload(env);
-  return targetingMap(p.targeting ?? p.slotTargeting ?? p.targetingMap);
+export function issue(partial: DiagnosticIssue): DiagnosticIssue {
+  return partial;
 }

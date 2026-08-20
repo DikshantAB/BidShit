@@ -30,7 +30,11 @@ export function sanitize(value: unknown): unknown {
     if (t === 'function') return `[function ${(val as { name?: string }).name || 'anonymous'}]`;
 
     // Objects from here down.
-    if (depth >= DEPTH_CAP) return '[max-depth]';
+    if (depth >= DEPTH_CAP) {
+      const pair = sizePair(val);
+      if (pair) return pair;
+      return '[max-depth]';
+    }
 
     // DOM nodes / window / events — avoid serializing huge/circular host objects.
     if (isHostObject(val)) return describeHostObject(val);
@@ -83,6 +87,14 @@ export function sanitize(value: unknown): unknown {
   } catch {
     return '[unserializable]';
   }
+}
+
+function sizePair(val: unknown): [number, number] | undefined {
+  if (!Array.isArray(val) || val.length !== 2) return undefined;
+  const w = Number(val[0]);
+  const h = Number(val[1]);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return undefined;
+  return [w, h];
 }
 
 function isHostObject(val: unknown): boolean {

@@ -132,6 +132,10 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
   let prebidAttached = false;
   let gptApiAttached = false;
   let gptPubadsAttached = false;
+  let lastTcfAuctionId: string | undefined;
+  let tcfListenerAttached = false;
+  let lastTcfPingKey = '';
+  let tcfPollTimer: ReturnType<typeof setInterval> | undefined;
   const startedAt = nowPerf();
 
   function ensureQueue(globalName: 'pbjs' | 'googletag', channel: EnvelopeChannel): void {
@@ -230,6 +234,75 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
     attachGptPubads();
     // PUC may load after Prebid; keep trying while the boot poller runs.
     if (prebidAttached) observeUcTag();
+    tickTcfApi();
+  }
+
+  // IAB TCF CMP API: observe-only. Subscribe to addEventListener as soon as
+  // __tcfapi exists (stub or full CMP). Independently ping every 50ms.
+  // Never wrap or replace __tcfapi.
+  function tcfPingKey(pingReturn: Record<string, unknown>): string {
+    return [
+      pingReturn.cmpStatus,
+      pingReturn.cmpLoaded,
+      pingReturn.displayStatus,
+      pingReturn.gdprApplies,
+      pingReturn.cmpId,
+      pingReturn.apiVersion,
+    ].map((v) => String(v)).join('|');
+  }
+
+  function onTcfPing(pingReturn: any): void {
+    const payload =
+      pingReturn && typeof pingReturn === 'object' && !Array.isArray(pingReturn)
+        ? pingReturn
+        : { pingReturn };
+    const key = tcfPingKey(payload as Record<string, unknown>);
+    if (key === lastTcfPingKey) return;
+    lastTcfPingKey = key;
+    post('event', 'cmp', 'tcfapi-ping', payload);
+  }
+
+  function onTcfApi(tcData: any, success?: boolean): void {
+    const base = { success: success !== false };
+    const payload =
+      tcData && typeof tcData === 'object' && !Array.isArray(tcData) ? { ...base, ...tcData } : { ...base, tcData };
+    post('event', 'cmp', 'tcfapi', payload);
+  }
+
+  function subscribeTcfListener(): void {
+    if (tcfListenerAttached) return;
+    const api = w.__tcfapi;
+    if (typeof api !== 'function') return;
+    tcfListenerAttached = true;
+    try {
+      api('addEventListener', 2, onTcfApi);
+    } catch (e) {
+      tcfListenerAttached = false;
+      post('error', 'hook', 'tcfapi_subscribe_error', { message: String(e) });
+    }
+  }
+
+  function tickTcfApi(): void {
+    const api = w.__tcfapi;
+    if (typeof api !== 'function') return;
+    subscribeTcfListener();
+    try {
+      api('ping', 2, onTcfPing);
+    } catch (e) {
+      post('error', 'hook', 'tcfapi_ping_error', { message: String(e) });
+    }
+  }
+
+  function startTcfPoller(): void {
+    const tick = () => {
+      try {
+        tickTcfApi();
+      } catch (e) {
+        post('error', 'hook', 'tcfapi_poll_error', { message: String(e) });
+      }
+    };
+    tcfPollTimer = setInterval(tick, BOOT_POLL_MS);
+    tick();
   }
 
   // ---- Prebid ------------------------------------------------------------
@@ -250,6 +323,7 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
     // Wrap observability methods (pure pass-through).
     for (const m of PREBID_WRAP_METHODS) {
       if (m === 'renderAd') wrapRenderAd(pbjs);
+      else if (m === 'requestBids') wrapRequestBids(pbjs);
       else wrap(pbjs, m, 'prebid');
     }
     observeUcTag();
@@ -265,6 +339,14 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
 
   function onPrebidEvent(ev: string, args: any[]): void {
     const payload = args.length <= 1 ? args[0] : args;
+    if (
+      (ev === 'auctionInit' || ev === 'auctionEnd') &&
+      payload &&
+      typeof payload === 'object' &&
+      payload.auctionId
+    ) {
+      lastTcfAuctionId = payload.auctionId;
+    }
     post('event', 'prebid', ev, payload, extractPrebidIds(ev, payload));
 
     // Snapshot read-only state at the useful moments.
@@ -274,7 +356,17 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
 
   function extractPrebidIds(ev: string, payload: any): { auctionId?: string; adUnitCode?: string } {
     const out: { auctionId?: string; adUnitCode?: string } = {};
+    if (Array.isArray(payload) && payload[0] && typeof payload[0] === 'object') {
+      const br = payload[0];
+      out.auctionId = br.auctionId;
+      out.adUnitCode = br.bids?.[0]?.adUnitCode || br.adUnitCode;
+      return out;
+    }
     if (!payload || typeof payload !== 'object') return out;
+    if (ev === 'tcf2Enforcement') {
+      out.auctionId = payload.auctionId || lastTcfAuctionId;
+      return out;
+    }
     const bid = payload.bid && typeof payload.bid === 'object' ? payload.bid : payload;
     out.auctionId =
       bid.auctionId || payload.auctionId || payload.bidderRequest?.auctionId || bid.bidderRequest?.auctionId;
@@ -296,6 +388,80 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
     const adId = args[1] != null ? String(args[1]) : undefined;
     const options = args[2] && typeof args[2] === 'object' ? sanitize(args[2]) : args[2];
     return [{ __type: 'Document' }, adId, options];
+  }
+
+  // Prebid catches bidsBackHandler exceptions (logError, no rethrow), so wrapping
+  // requestBids alone never sees them. Wrap the callback, call through, rethrow.
+  function wrapRequestBids(pbjs: any): void {
+    try {
+      const orig = pbjs.requestBids;
+      if (typeof orig !== 'function' || orig.__bsWrapped) return;
+      const wrapped = function (this: any, ...args: any[]) {
+        const callArgs = requestBidsArgsWithWrappedHandler(args);
+        let result: unknown;
+        let threw: unknown;
+        let didThrow = false;
+        try {
+          result = orig.apply(this, callArgs);
+        } catch (e) {
+          didThrow = true;
+          threw = e;
+        }
+        try {
+          post('api', 'prebid', 'requestBids', { args, threw: didThrow ? String(threw) : undefined });
+        } catch (e) {
+          post('error', 'hook', 'wrap_callback_error', { method: 'requestBids', message: String(e) });
+        }
+        if (didThrow) throw threw;
+        return result;
+      };
+      (wrapped as any).__bsWrapped = true;
+      pbjs.requestBids = wrapped;
+    } catch (e) {
+      post('error', 'hook', 'wrap_error', { method: 'requestBids', message: String(e) });
+    }
+  }
+
+  function requestBidsArgsWithWrappedHandler(args: any[]): any[] {
+    const opts = args[0];
+    if (!opts || typeof opts !== 'object' || typeof opts.bidsBackHandler !== 'function') return args;
+    return [Object.assign({}, opts, { bidsBackHandler: wrapBidsBackHandler(opts.bidsBackHandler) }), ...args.slice(1)];
+  }
+
+  function wrapBidsBackHandler(handler: (...handlerArgs: any[]) => unknown): (...handlerArgs: any[]) => unknown {
+    if ((handler as any).__bsWrapped) return handler;
+    const wrapped = function (this: any, ...handlerArgs: any[]) {
+      let result: unknown;
+      let threw: unknown;
+      let didThrow = false;
+      try {
+        result = handler.apply(this, handlerArgs);
+      } catch (e) {
+        didThrow = true;
+        threw = e;
+      }
+      try {
+        const bids = handlerArgs[0];
+        const auctionId = handlerArgs[2] != null ? String(handlerArgs[2]) : undefined;
+        post(
+          'api',
+          'prebid',
+          'bidsBackHandler',
+          {
+            timedOut: !!handlerArgs[1],
+            threw: didThrow ? String(threw) : undefined,
+            bidGroups: bids && typeof bids === 'object' && !Array.isArray(bids) ? Object.keys(bids) : [],
+          },
+          { auctionId }
+        );
+      } catch (e) {
+        post('error', 'hook', 'wrap_callback_error', { method: 'bidsBackHandler', message: String(e) });
+      }
+      if (didThrow) throw threw;
+      return result;
+    };
+    (wrapped as any).__bsWrapped = true;
+    return wrapped;
   }
 
   function wrapRenderAd(pbjs: any): void {
@@ -453,11 +619,154 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
     gptApiAttached = true;
 
     for (const m of GPT_WRAP_METHODS) {
-      if (m === 'defineSlot' || m === 'defineOutOfPageSlot') {
-        wrap(gt, m, 'gpt', (_args, result) => wrapSlot(result));
-      } else {
-        wrap(gt, m, 'gpt');
-      }
+      if (m === 'defineSlot' || m === 'defineOutOfPageSlot') wrapDefineSlot(gt, m);
+      else if (m === 'display') wrapGptDisplay(gt);
+      else wrap(gt, m, 'gpt');
+    }
+  }
+
+  function summarizeGptSlot(slot: any): { __type: string; slotElementId?: string; adUnitPath?: string } | null {
+    if (slot == null) return null;
+    return {
+      __type: 'googletag.Slot',
+      slotElementId: safe(() => slot.getSlotElementId()),
+      adUnitPath: safe(() => slot.getAdUnitPath()),
+    };
+  }
+
+  function wrapDefineSlot(gt: any, method: string): void {
+    try {
+      const orig = gt[method];
+      if (typeof orig !== 'function' || orig.__bsWrapped) return;
+      const wrapped = function (this: any, ...args: any[]) {
+        let result: unknown;
+        let threw: unknown;
+        let didThrow = false;
+        try {
+          result = orig.apply(this, args);
+        } catch (e) {
+          didThrow = true;
+          threw = e;
+        }
+        const summarized = didThrow ? undefined : summarizeGptSlot(result);
+        try {
+          post(
+            'api',
+            'gpt',
+            method,
+            { args, result: summarized === undefined ? null : summarized, threw: didThrow ? String(threw) : undefined },
+            { slotElementId: summarized?.slotElementId }
+          );
+          if (!didThrow && result) wrapSlot(result);
+        } catch (e) {
+          post('error', 'hook', 'wrap_callback_error', { method, message: String(e) });
+        }
+        if (didThrow) throw threw;
+        return result;
+      };
+      (wrapped as any).__bsWrapped = true;
+      gt[method] = wrapped;
+    } catch (e) {
+      post('error', 'hook', 'wrap_error', { method, message: String(e) });
+    }
+  }
+
+  function displayTargetId(args: any[]): string | undefined {
+    const a0 = args[0];
+    if (typeof a0 === 'string' && !a0.startsWith('/')) return a0;
+    if (typeof a0 === 'string' && a0.startsWith('/') && typeof args[2] === 'string') return args[2];
+    return summarizeGptSlot(a0)?.slotElementId;
+  }
+
+  function wrapGptDisplay(host: any): void {
+    try {
+      const orig = host.display;
+      if (typeof orig !== 'function' || orig.__bsWrapped) return;
+      const wrapped = function (this: any, ...args: any[]) {
+        let result: unknown;
+        let threw: unknown;
+        let didThrow = false;
+        try {
+          result = orig.apply(this, args);
+        } catch (e) {
+          didThrow = true;
+          threw = e;
+        }
+        const slotElementId = displayTargetId(args);
+        try {
+          post(
+            'api',
+            'gpt',
+            'display',
+            { args, slotElementId, threw: didThrow ? String(threw) : undefined },
+            { slotElementId }
+          );
+        } catch (e) {
+          post('error', 'hook', 'wrap_callback_error', { method: 'display', message: String(e) });
+        }
+        if (didThrow) throw threw;
+        return result;
+      };
+      (wrapped as any).__bsWrapped = true;
+      host.display = wrapped;
+    } catch (e) {
+      post('error', 'hook', 'wrap_error', { method: 'display', message: String(e) });
+    }
+  }
+
+  function wrapRefresh(pubads: any): void {
+    try {
+      const orig = pubads.refresh;
+      if (typeof orig !== 'function' || orig.__bsWrapped) return;
+      const wrapped = function (this: any, ...args: any[]) {
+        let result: unknown;
+        let threw: unknown;
+        let didThrow = false;
+        try {
+          result = orig.apply(this, args);
+        } catch (e) {
+          didThrow = true;
+          threw = e;
+        }
+        const arg = args[0];
+        let unscoped = arg == null || (!Array.isArray(arg) && (typeof arg !== 'object' || !arg));
+        let slotIds: string[] = [];
+        try {
+          if (Array.isArray(arg)) {
+            unscoped = false;
+            slotIds = arg
+              .map((s) => (typeof s === 'string' ? s : safe(() => s && s.getSlotElementId && s.getSlotElementId())))
+              .filter((id: unknown): id is string => typeof id === 'string' && !!id);
+          } else if (arg && typeof arg.getSlotElementId === 'function') {
+            unscoped = false;
+            const id = safe(() => arg.getSlotElementId());
+            if (id) slotIds = [id];
+          } else if (typeof pubads.getSlots === 'function') {
+            slotIds = pubads
+              .getSlots()
+              .map((s: any) => safe(() => s && s.getSlotElementId && s.getSlotElementId()))
+              .filter((id: unknown): id is string => typeof id === 'string' && !!id);
+          }
+        } catch {
+          /* keep empty slotIds */
+        }
+        try {
+          post('api', 'gpt', 'refresh', {
+            args,
+            slotIds,
+            unscoped,
+            threw: didThrow ? String(threw) : undefined,
+          });
+        } catch (e) {
+          post('error', 'hook', 'wrap_callback_error', { method: 'refresh', message: String(e) });
+        }
+        if (didThrow) throw threw;
+        return result;
+      };
+      (wrapped as any).__bsWrapped = true;
+      pubads.refresh = wrapped;
+    } catch (e) {
+      post('error', 'hook', 'wrap_error', { method: 'refresh', message: String(e) });
     }
   }
 
@@ -476,7 +785,11 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
       }
     }
 
-    for (const m of PUBADS_WRAP_METHODS) wrap(pubads, m, 'gpt');
+    for (const m of PUBADS_WRAP_METHODS) {
+      if (m === 'refresh') wrapRefresh(pubads);
+      else if (m === 'display') wrapGptDisplay(pubads);
+      else wrap(pubads, m, 'gpt');
+    }
 
     // Read-only snapshot of PubAds state.
     post('snapshot', 'gpt', 'pubads', {
@@ -497,11 +810,63 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
         sizes: safe(() => slot.getSizes && slot.getSizes()),
       }, { slotElementId });
       for (const m of SLOT_WRAP_METHODS) {
-        wrap(slot, m, 'gpt', undefined, () => ({ slotElementId, adUnitCode: slotElementId }));
+        if (m === 'addService') wrapAddService(slot, slotElementId);
+        else wrap(slot, m, 'gpt', undefined, () => ({ slotElementId, adUnitCode: slotElementId }));
       }
     } catch (e) {
       post('error', 'gpt', 'wrap_slot_error', { message: String(e) });
     }
+  }
+
+  function wrapAddService(slot: any, slotElementId?: string): void {
+    try {
+      const orig = slot.addService;
+      if (typeof orig !== 'function' || orig.__bsWrapped) return;
+      const wrapped = function (this: any, ...args: any[]) {
+        let result: unknown;
+        let threw: unknown;
+        let didThrow = false;
+        try {
+          result = orig.apply(this, args);
+        } catch (e) {
+          didThrow = true;
+          threw = e;
+        }
+        try {
+          post(
+            'api',
+            'gpt',
+            'addService',
+            {
+              args,
+              service: describeGptService(args[0]),
+              threw: didThrow ? String(threw) : undefined,
+            },
+            { slotElementId, adUnitCode: slotElementId }
+          );
+        } catch (e) {
+          post('error', 'hook', 'wrap_callback_error', { method: 'addService', message: String(e) });
+        }
+        if (didThrow) throw threw;
+        return result;
+      };
+      (wrapped as any).__bsWrapped = true;
+      slot.addService = wrapped;
+    } catch (e) {
+      post('error', 'hook', 'wrap_error', { method: 'addService', message: String(e) });
+    }
+  }
+
+  function describeGptService(svc: any): string {
+    const gt = w.googletag;
+    try {
+      if (gt && typeof gt.pubads === 'function' && svc === gt.pubads()) return 'pubads';
+      if (gt && typeof gt.companionAds === 'function' && svc === gt.companionAds()) return 'companionAds';
+      if (svc && typeof svc.getSlots === 'function' && typeof svc.refresh === 'function') return 'pubads';
+    } catch {
+      /* ignore */
+    }
+    return 'other';
   }
 
   function onGptEvent(ev: string, e: any): void {
@@ -598,4 +963,5 @@ import type { Envelope, EnvelopeChannel, EnvelopeKind } from './shared/types';
   ensureQueue('pbjs', 'prebid');
   ensureQueue('googletag', 'gpt');
   startBootPoller();
+  startTcfPoller();
 })();

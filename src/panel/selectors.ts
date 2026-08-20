@@ -341,10 +341,27 @@ export function diagnoseSession(s: SessionState): DiagnosticIssue[] {
   return diagnose(s);
 }
 
+/** Auction ids that requested or received anything for this ad unit / GPT slot. */
+export function auctionIdsForEntity(s: SessionState, entity: string): Set<string> {
+  const ids = new Set<string>();
+  if (!entity) return ids;
+  const slotPath = s.slots.get(entity)?.adUnitPath;
+  for (const a of auctionList(s)) {
+    if (auctionIncludesAdUnit(a, entity) || (slotPath && auctionIncludesAdUnit(a, slotPath))) {
+      ids.add(a.auctionId);
+    }
+  }
+  return ids;
+}
+
 /** True when an issue is scoped to (or mentions) the selected ad unit / GPT slot. */
-export function issueTouchesEntity(issue: DiagnosticIssue, entity: string): boolean {
+export function issueTouchesEntity(issue: DiagnosticIssue, entity: string, session?: SessionState): boolean {
   if (!entity) return true;
-  return issue.slotId === entity || issue.adUnitCode === entity;
+  if (issue.slotId === entity || issue.adUnitCode === entity) return true;
+  if (issue.scope === 'consent' && issue.auctionId && session) {
+    return auctionIdsForEntity(session, entity).has(issue.auctionId);
+  }
+  return false;
 }
 
 /** An issue is "global" when it is not pinned to a specific slot or ad unit. */
@@ -358,6 +375,7 @@ export interface IssueFilter {
   confidences?: DiagnosticIssue['confidence'][];
   text?: string;
   entity?: string;
+  session?: SessionState;
   /** When an entity is selected: 'entity' shows only its issues, 'all' shows everything. */
   entityMode?: 'entity' | 'all';
 }
@@ -368,9 +386,9 @@ export function filterIssues(issues: DiagnosticIssue[], f: IssueFilter): Diagnos
     if (f.scopes && f.scopes.length && !f.scopes.includes(issue.scope)) return false;
     if (f.severities && f.severities.length && !f.severities.includes(issue.severity)) return false;
     if (f.confidences && f.confidences.length && !f.confidences.includes(issue.confidence)) return false;
-    if (f.entity && f.entityMode !== 'all' && !issueTouchesEntity(issue, f.entity)) return false;
+    if (f.entity && f.entityMode !== 'all' && !issueTouchesEntity(issue, f.entity, f.session)) return false;
     if (text) {
-      const hay = `${issue.ruleId} ${issue.title} ${issue.explanation} ${issue.scope} ${issue.severity} ${
+      const hay = `${issue.ruleId} ${issue.title} ${issue.signal} ${issue.explanation} ${issue.scope} ${issue.severity} ${
         issue.confidence
       } ${issue.slotId || ''} ${issue.adUnitCode || ''} ${issue.auctionId || ''} ${issue.evidence
         .map((e) => e.summary)
@@ -381,7 +399,7 @@ export function filterIssues(issues: DiagnosticIssue[], f: IssueFilter): Diagnos
   });
 }
 
-export const ISSUE_SCOPES: IssueScope[] = ['observation', 'prebid', 'gpt', 'integration', 'network'];
+export const ISSUE_SCOPES: IssueScope[] = ['observation', 'prebid', 'gpt', 'integration', 'network', 'consent'];
 export const ISSUE_SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
 export const ISSUE_CONFIDENCES: DiagnosticIssue['confidence'][] = ['confirmed', 'likely', 'possible'];
 
@@ -435,6 +453,8 @@ export function scopeLabel(scope: IssueScope): string {
       return 'Prebid + GPT';
     case 'network':
       return 'Network';
+    case 'consent':
+      return 'CMP / TCF';
   }
 }
 

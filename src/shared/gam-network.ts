@@ -46,6 +46,33 @@ const INTERESTING_QUERY = new Set([
 
 const REDACT_QUERY = new Set(['cookie', 'cookies', 'puid', 'nid']);
 
+/** Origin + path only; query identifiers are stripped for NET evidence. */
+export function originPath(url: string): { host: string; path: string; originPath: string } {
+  try {
+    const u = new URL(url);
+    return { host: u.hostname, path: u.pathname, originPath: `${u.origin}${u.pathname}` };
+  } catch {
+    return { host: '', path: url, originPath: url.split('?')[0] || url };
+  }
+}
+
+export function isPrebidOrGptScript(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    if (path.includes('prebid') && (path.endsWith('.js') || path.includes('.js'))) return true;
+    if (path.endsWith('/gpt.js') || path.includes('/tag/js/gpt.js')) return true;
+    if (path.includes('pubads_impl') || path.includes('/gpt/pubads')) return true;
+    if (host.includes('googletagservices') || host.includes('securepubads.g.doubleclick.net')) {
+      return path.includes('gpt') || path.includes('pubads');
+    }
+    return false;
+  } catch {
+    return /prebid|\bgpt\.js\b|pubads_impl/i.test(url);
+  }
+}
+
 export function isGamAdRequest(url: string): boolean {
   try {
     const u = new URL(url);

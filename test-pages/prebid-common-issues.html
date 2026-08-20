@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BidShitter — Common Prebid issue reproductions</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #0b1020;
+        color: #e8ecf8;
+      }
+
+      main {
+        width: min(1100px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0 64px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin-top: 0;
+      }
+
+      .lead {
+        max-width: 850px;
+        color: #b8c1d9;
+        line-height: 1.55;
+      }
+
+      .notice,
+      .active,
+      .console {
+        border: 1px solid #2b3551;
+        border-radius: 12px;
+        background: #121a2f;
+        padding: 16px;
+      }
+
+      .notice {
+        margin: 20px 0;
+      }
+
+      .notice strong,
+      .active strong {
+        color: #9fc3ff;
+      }
+
+      .issue-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+        gap: 12px;
+        margin: 20px 0;
+      }
+
+      button {
+        min-height: 92px;
+        border: 1px solid #344263;
+        border-radius: 10px;
+        padding: 13px;
+        background: #17213a;
+        color: inherit;
+        cursor: pointer;
+        text-align: left;
+        transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+      }
+
+      button:hover,
+      button:focus-visible {
+        border-color: #76a7ff;
+        background: #1d2b4c;
+        outline: none;
+        transform: translateY(-1px);
+      }
+
+      button.selected {
+        border-color: #76a7ff;
+        box-shadow: 0 0 0 2px rgb(118 167 255 / 22%);
+      }
+
+      button code {
+        display: block;
+        margin-bottom: 7px;
+        color: #9fc3ff;
+        font-weight: 700;
+      }
+
+      button span {
+        color: #d7ddef;
+        line-height: 1.35;
+      }
+
+      .active {
+        margin: 20px 0;
+        border-color: #486594;
+      }
+
+      .active[data-state="idle"] {
+        display: none;
+      }
+
+      .active p:last-child {
+        margin-bottom: 0;
+      }
+
+      .pill {
+        display: inline-block;
+        margin-left: 8px;
+        border-radius: 999px;
+        background: #26375d;
+        padding: 3px 9px;
+        color: #cfe0ff;
+        font-size: 12px;
+        vertical-align: middle;
+      }
+
+      .console {
+        min-height: 180px;
+        max-height: 420px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #c8d2e9;
+        font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 18px 0;
+      }
+
+      .actions button {
+        min-height: auto;
+        width: auto;
+      }
+
+      iframe {
+        width: 300px;
+        height: 250px;
+        border: 1px dashed #607095;
+        background: white;
+      }
+
+      code {
+        color: #b8d2ff;
+      }
+    </style>
+    <script>
+      "use strict";
+
+      const PREBID_CDN = "https://cdn.jsdelivr.net/npm/prebid.js@latest/dist/not-for-prod/prebid.js";
+      const AUCTION_TIMEOUT = 900;
+      const issueId = new URLSearchParams(location.search).get("issue");
+
+      window.pbjs = window.pbjs || {};
+      window.pbjs.que = window.pbjs.que || [];
+      window.pbjs.cmd = window.pbjs.cmd || window.pbjs.que;
+
+      const issueDefinitions = [
+        {
+          id: "COMMON-PB-01",
+          title: "Prebid does not load or become ready",
+          expected: "Prebid intent is visible, but the exact CDN script is blocked by an intentionally incorrect integrity hash. Wait at least 10 seconds for the boot rule."
+        },
+        {
+          id: "COMMON-PB-02",
+          title: "Auction is never started",
+          expected: "Prebid loads and a valid ad unit is registered, but requestBids is deliberately never called. Wait for the rule's grace period."
+        },
+        {
+          id: "COMMON-PB-03",
+          title: "Requested ad unit is missing or excluded",
+          expected: "Only demo-known-slot is registered, while requestBids asks for demo-unknown-slot."
+        },
+        {
+          id: "COMMON-PB-04",
+          title: "Duplicate ad-unit code",
+          expected: "Two effectively identical definitions of demo-duplicate-slot are registered and included in an auction."
+        },
+        {
+          id: "COMMON-PB-05",
+          title: "No usable bidder is configured",
+          expected: "The auction contains a banner ad unit with an empty bids array, so no bidRequested should fire for it."
+        },
+        {
+          id: "COMMON-PB-06",
+          title: "Banner sizes are missing or invalid",
+          expected: "The banner unit has an empty mediaTypes.banner.sizes array. The rule should use the captured definition even if Prebid drops it before auctionInit."
+        },
+        {
+          id: "COMMON-PB-07",
+          title: "Bidder returns no bid",
+          expected: "The debugging interceptor returns null, producing noBid. COMMON-PB-11 may also appear because the auction has no eligible bid."
+        },
+        {
+          id: "COMMON-PB-08",
+          title: "Bidder or auction times out",
+          expected: "A mock response is delayed for 2500 ms while the auction timeout is 250 ms, producing bidTimeout/auctionTimeout."
+        },
+        {
+          id: "COMMON-PB-09",
+          title: "Bid response is malformed or rejected",
+          expected: "A mock CPM of 100 exceeds maxBid=5, producing bidRejected for a non-floor reason."
+        },
+        {
+          id: "COMMON-PB-10",
+          title: "Bid is below the configured floor",
+          expected: "The price floors module enforces a USD 10 banner floor against a USD 0.10 mock bid."
+        },
+        {
+          id: "COMMON-PB-11",
+          title: "Auction ends with no eligible bid",
+          expected: "A requested bidder returns no bid; auctionEnd contains no usable bid. COMMON-PB-07 is expected as supporting evidence."
+        },
+        {
+          id: "COMMON-PB-12",
+          title: "Auction continuation callback fails",
+          expected: "The auction completes normally, then its bidsBackHandler deliberately throws a demo error."
+        },
+        {
+          id: "COMMON-PB-13",
+          title: "Prebid render cannot resolve the creative",
+          expected: "pbjs.renderAd receives a deliberately unknown adId and should emit adRenderFailed with cannotFindAd."
+        }
+      ];
+
+      const PREBID_EVENTS = [
+        "requestBids",
+        "beforeRequestBids",
+        "auctionInit",
+        "bidRequested",
+        "bidResponse",
+        "noBid",
+        "bidTimeout",
+        "auctionTimeout",
+        "bidRejected",
+        "bidderDone",
+        "bidderError",
+        "auctionEnd",
+        "setTargeting",
+        "bidWon",
+        "adRenderSucceeded",
+        "adRenderFailed",
+        "staleRender",
+        "expiredRender"
+      ];
+
+      let logElement;
+
+      function safeJson(value) {
+        const seen = new WeakSet();
+        try {
+          return JSON.stringify(value, function (key, item) {
+            if (["ad", "adm", "vastXml", "vastUrl", "native"].includes(key)) return "[stripped]";
+            if (item && typeof item === "object") {
+              if (seen.has(item)) return "[circular]";
+              seen.add(item);
+            }
+            return item;
+          });
+        } catch (error) {
+          return String(value);
+        }
+      }
+
+      function log(message, data) {
+        const line = `[${new Date().toLocaleTimeString()}] ${message}${data === undefined ? "" : ` ${safeJson(data)}`}`;
+        console.log("[prebid-repro]", message, data === undefined ? "" : data);
+        if (!logElement) return;
+        logElement.textContent += `${line}\n`;
+        logElement.scrollTop = logElement.scrollHeight;
+      }
+
+      function navigateToIssue(id) {
+        const url = new URL(location.href);
+        url.search = "";
+        url.searchParams.set("issue", id);
+        location.href = url.href;
+      }
+
+      function clearIssue() {
+        location.href = location.pathname;
+      }
+
+      function loadPrebid(shouldFailIntegrity) {
+        const script = document.createElement("script");
+        script.async = true;
+        script.src = PREBID_CDN;
+        script.crossOrigin = "anonymous";
+        if (shouldFailIntegrity) {
+          script.integrity = "sha384-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        }
+        script.addEventListener("load", function () {
+          log("Hosted Prebid script load event fired", { libLoaded: window.pbjs && window.pbjs.libLoaded });
+        });
+        script.addEventListener("error", function () {
+          log("Hosted Prebid script failed as intended", { src: PREBID_CDN });
+        });
+        document.head.appendChild(script);
+        log("Requested hosted Prebid script", { src: PREBID_CDN, intentionalIntegrityFailure: shouldFailIntegrity });
+      }
+
+      function registerEventLoggers() {
+        PREBID_EVENTS.forEach(function (eventName) {
+          try {
+            pbjs.onEvent(eventName, function (payload) {
+              log(`Prebid event: ${eventName}`, payload);
+            });
+          } catch (error) {
+            log(`Could not subscribe to ${eventName}`, String(error));
+          }
+        });
+      }
+
+      function validAdUnit(code, bidder) {
+        return {
+          code: code,
+          mediaTypes: {
+            banner: {
+              sizes: [[300, 250]]
+            }
+          },
+          bids: bidder ? [{ bidder: bidder, params: {} }] : []
+        };
+      }
+
+      function installMockBidder(interceptRule) {
+        const bidder = "bidshitterDemoBidder";
+        pbjs.registerBidAdapter(null, bidder, {
+          supportedMediaTypes: ["banner"],
+          isBidRequestValid: function () {
+            return true;
+          }
+        });
+        pbjs.setConfig({
+          debugging: {
+            enabled: true,
+            intercept: [Object.assign({ when: { bidder: bidder } }, interceptRule)]
+          }
+        });
+        return bidder;
+      }
+
+      function mockBid(overrides) {
+        return Object.assign(
+          {
+            cpm: 2.5,
+            currency: "USD",
+            ttl: 300,
+            creativeId: "bidshitter-demo-creative",
+            netRevenue: true,
+            width: 300,
+            height: 250,
+            ad: "<div style='width:300px;height:250px;background:#dce8ff;color:#102044;display:grid;place-items:center;font:20px sans-serif'>BidShitter mock bid</div>",
+            meta: { advertiserDomains: ["example.test"] }
+          },
+          overrides || {}
+        );
+      }
+
+      function requestOne(code, timeout, bidsBackHandler) {
+        pbjs.requestBids({
+          adUnitCodes: [code],
+          timeout: timeout || AUCTION_TIMEOUT,
+          bidsBackHandler: bidsBackHandler || function (bids, timedOut, auctionId) {
+            log("bidsBackHandler completed", { timedOut: timedOut, auctionId: auctionId, bidGroups: Object.keys(bids || {}) });
+          }
+        });
+      }
+
+      function runScenario(id) {
+        registerEventLoggers();
+        log("Prebid is ready; starting scenario", { issue: id, version: pbjs.version, libLoaded: pbjs.libLoaded });
+
+        switch (id) {
+          case "COMMON-PB-02": {
+            const bidder = installMockBidder({ then: mockBid() });
+            pbjs.addAdUnits(validAdUnit("demo-never-auctioned-slot", bidder));
+            log("Registered ad unit; deliberately not calling requestBids");
+            break;
+          }
+
+          case "COMMON-PB-03": {
+            const bidder = installMockBidder({ then: mockBid() });
+            pbjs.addAdUnits(validAdUnit("demo-known-slot", bidder));
+            requestOne("demo-unknown-slot");
+            break;
+          }
+
+          case "COMMON-PB-04": {
+            const bidder = installMockBidder({ then: mockBid() });
+            const first = validAdUnit("demo-duplicate-slot", bidder);
+            const second = validAdUnit("demo-duplicate-slot", bidder);
+            pbjs.addAdUnits([first, second]);
+            requestOne("demo-duplicate-slot");
+            break;
+          }
+
+          case "COMMON-PB-05": {
+            const code = "demo-no-bidder-slot";
+            pbjs.addAdUnits(validAdUnit(code));
+            requestOne(code);
+            break;
+          }
+
+          case "COMMON-PB-06": {
+            const bidder = installMockBidder({ then: mockBid() });
+            const code = "demo-invalid-sizes-slot";
+            pbjs.addAdUnits({
+              code: code,
+              mediaTypes: { banner: { sizes: [] } },
+              bids: [{ bidder: bidder, params: {} }]
+            });
+            requestOne(code);
+            break;
+          }
+
+          case "COMMON-PB-07": {
+            const bidder = installMockBidder({ then: null });
+            const code = "demo-no-bid-slot";
+            pbjs.addAdUnits(validAdUnit(code, bidder));
+            requestOne(code);
+            break;
+          }
+
+          case "COMMON-PB-08": {
+            const bidder = installMockBidder({ then: mockBid(), options: { delay: 2500 } });
+            const code = "demo-timeout-slot";
+            pbjs.addAdUnits(validAdUnit(code, bidder));
+            requestOne(code, 250);
+            break;
+          }
+
+          case "COMMON-PB-09": {
+            const bidder = installMockBidder({ then: mockBid({ cpm: 100 }) });
+            const code = "demo-rejected-slot";
+            pbjs.setConfig({ maxBid: 5 });
+            pbjs.addAdUnits(validAdUnit(code, bidder));
+            requestOne(code);
+            break;
+          }
+
+          case "COMMON-PB-10": {
+            const bidder = installMockBidder({ then: mockBid({ cpm: 0.1, currency: "USD" }) });
+            const code = "demo-floor-slot";
+            pbjs.setConfig({
+              floors: {
+                enabled: true,
+                enforcement: {
+                  enforceJS: true,
+                  floorDeals: false,
+                  bidAdjustment: true
+                },
+                data: {
+                  currency: "USD",
+                  schema: { fields: ["mediaType", "size"] },
+                  values: {
+                    "banner|300x250": 10,
+                    "banner|*": 10,
+                    "*|*": 10
+                  },
+                  default: 10
+                }
+              }
+            });
+            pbjs.addAdUnits(validAdUnit(code, bidder));
+            requestOne(code);
+            break;
+          }
+
+          case "COMMON-PB-11": {
+            const bidder = installMockBidder({ then: null });
+            const code = "demo-no-eligible-bid-slot";
+            pbjs.addAdUnits(validAdUnit(code, bidder));
+            requestOne(code);
+            break;
+          }
+
+          case "COMMON-PB-12": {
+            const bidder = installMockBidder({ then: mockBid() });
+            const code = "demo-callback-failure-slot";
+            pbjs.addAdUnits(validAdUnit(code, bidder));
+            requestOne(code, AUCTION_TIMEOUT, function () {
+              log("bidsBackHandler is now throwing the intentional demo error");
+              throw new Error("BidShitter demo: intentional bidsBackHandler failure for COMMON-PB-12");
+            });
+            break;
+          }
+
+          case "COMMON-PB-13": {
+            const frame = document.getElementById("render-frame");
+            log("Calling renderAd with an unknown adId");
+            pbjs.renderAd(frame.contentWindow.document, "bidshitter-intentionally-unknown-ad-id");
+            break;
+          }
+
+          default:
+            log("No matching scenario selected", id);
+        }
+      }
+
+      function renderUi() {
+        const selected = issueDefinitions.find(function (item) {
+          return item.id === issueId;
+        });
+        const grid = document.getElementById("issue-grid");
+        logElement = document.getElementById("event-log");
+
+        issueDefinitions.forEach(function (item) {
+          const button = document.createElement("button");
+          const code = document.createElement("code");
+          const title = document.createElement("span");
+          code.textContent = item.id;
+          title.textContent = item.title;
+          button.type = "button";
+          button.append(code, title);
+          button.classList.toggle("selected", item.id === issueId);
+          button.addEventListener("click", function () {
+            navigateToIssue(item.id);
+          });
+          grid.appendChild(button);
+        });
+
+        if (!selected) return;
+        const active = document.getElementById("active-scenario");
+        active.dataset.state = "active";
+        document.getElementById("active-id").textContent = selected.id;
+        document.getElementById("active-title").textContent = selected.title;
+        document.getElementById("active-expected").textContent = selected.expected;
+        log("Fresh page load selected scenario", selected.id);
+
+        if (selected.id === "COMMON-PB-01") {
+          loadPrebid(true);
+          window.setTimeout(function () {
+            log("PB-01 checkpoint", {
+              libLoaded: Boolean(window.pbjs && window.pbjs.libLoaded),
+              queuedCommands: window.pbjs && window.pbjs.que && window.pbjs.que.length
+            });
+          }, 10000);
+          return;
+        }
+
+        pbjs.que.push(function () {
+          runScenario(selected.id);
+        });
+        loadPrebid(false);
+      }
+
+      window.addEventListener("DOMContentLoaded", renderUi);
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1>Common Prebid issue reproductions</h1>
+      <p class="lead">
+        Open BidShitter DevTools on this page, then click an issue. Each button performs a full page reload with one isolated scenario so the extension can observe Prebid from boot. The page uses
+        <code>https://cdn.jsdelivr.net/npm/prebid.js@latest/dist/not-for-prod/prebid.js</code> and the built-in debugging interceptor; it does not call a real bidder endpoint.
+      </p>
+
+      <div class="notice">
+        <strong>Testing workflow:</strong> keep DevTools open, click one scenario, wait for the stated timeout/grace period, verify the Issues and Events panels, then select the next scenario. Related summary issues can legitimately appear together, especially PB-07 with PB-11.
+      </div>
+
+      <section aria-labelledby="scenario-heading">
+        <h2 id="scenario-heading">Choose an isolated scenario</h2>
+        <div id="issue-grid" class="issue-grid"></div>
+      </section>
+
+      <section id="active-scenario" class="active" data-state="idle" aria-live="polite">
+        <h2>
+          <span id="active-id"></span>
+          <span class="pill">running</span>
+        </h2>
+        <p><strong id="active-title"></strong></p>
+        <p id="active-expected"></p>
+      </section>
+
+      <div class="actions">
+        <button type="button" onclick="location.reload()">Repeat selected scenario</button>
+        <button type="button" onclick="clearIssue()">Return to idle page</button>
+      </div>
+
+      <h2>Page-side event log</h2>
+      <pre id="event-log" class="console">Select an issue to begin. The BidShitter panel remains the source of truth.&#10;</pre>
+
+      <h2>Render target for PB-13</h2>
+      <iframe id="render-frame" title="Prebid render failure target"></iframe>
+    </main>
+  </body>
+</html>

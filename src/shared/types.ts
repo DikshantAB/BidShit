@@ -1,7 +1,7 @@
 // Shared message + domain types. See spec.md sections 7.3 and 7.4.
 
 export type EnvelopeKind = 'event' | 'api' | 'snapshot' | 'status' | 'error';
-export type EnvelopeChannel = 'prebid' | 'gpt' | 'hook' | 'network';
+export type EnvelopeChannel = 'prebid' | 'gpt' | 'hook' | 'network' | 'cmp';
 
 /** One captured record travelling hook -> content-script -> background -> panel. */
 export interface Envelope {
@@ -58,6 +58,9 @@ export interface StatusFlags {
   hookLate: boolean;
   prebidPresent: boolean;
   gptPresent: boolean;
+  cmpPresent: boolean;
+  /** True after at least one __tcfapi addEventListener callback (not ping). */
+  cmpConnected: boolean;
   libLoaded: boolean;
   apiReady: boolean;
   pubadsReady: boolean;

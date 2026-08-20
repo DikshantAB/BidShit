@@ -10,6 +10,7 @@ import { GptView } from './views/GptView';
 import { IssuesView } from './views/IssuesView';
 import { SourceView } from './views/SourceView';
 import { TargetingView } from './views/TargetingView';
+import { CmpView } from './views/CmpView';
 import { TimelineView } from './views/TimelineView';
 
 export default function App({ inspectable }: { inspectable: boolean }) {
@@ -73,7 +74,11 @@ export default function App({ inspectable }: { inspectable: boolean }) {
     );
   }
 
-  const nothing = !session.status.prebidPresent && !session.status.gptPresent;
+  const nothing =
+    !session.status.prebidPresent &&
+    !session.status.gptPresent &&
+    !session.status.cmpPresent &&
+    issues.length === 0;
 
   return (
     <Shell status={session}>
@@ -133,6 +138,7 @@ export default function App({ inspectable }: { inspectable: boolean }) {
                 <TabsTrigger value="bids">Bids</TabsTrigger>
                 <TabsTrigger value="targeting">Targeting</TabsTrigger>
                 <TabsTrigger value="gpt">GPT</TabsTrigger>
+                <TabsTrigger value="cmp">CMP</TabsTrigger>
                 <TabsTrigger value="source">Source</TabsTrigger>
                 <TabsTrigger value="events">Events</TabsTrigger>
               </TabsList>
@@ -161,6 +167,9 @@ export default function App({ inspectable }: { inspectable: boolean }) {
                   <TabsContent value="gpt" className="h-full">
                     <GptView entity={selectedEntity} />
                   </TabsContent>
+                  <TabsContent value="cmp" className="h-full">
+                    <CmpView entity={selectedEntity} />
+                  </TabsContent>
                   <TabsContent value="source" className="h-full">
                     <SourceView entity={selectedEntity} />
                   </TabsContent>
@@ -183,10 +192,10 @@ function Shell({ status, children }: { status: ReturnType<typeof useSession>; ch
     <div className="flex h-full flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <span className="text-sm font-semibold tracking-tight">BidShitter</span>
-        <span className="text-[10px] text-muted-foreground">Prebid + GPT lifecycle debugger</span>
+        <span className="text-[10px] text-muted-foreground">Get Bid Done</span>
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          <Chip on={status.connected} label={status.connected ? 'connected' : 'disconnected'} tone={status.connected ? 'success' : 'destructive'} />
-          <Chip on={s.hookReady} label="hook" />
+          <Chip on={status.connected} label={status.connected ? 'CMP_Connected' : 'CMP_Disconnected'} tone={status.connected ? 'success' : 'destructive'} />
+          <Chip on={s.hookReady} label="shit-hook" />
           {s.hookLate && <Badge variant="warning">hook late — reload</Badge>}
           <Chip on={s.libLoaded} label="pbjs" />
           <Chip on={s.apiReady} label="gpt" />

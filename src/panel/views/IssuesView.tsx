@@ -42,8 +42,8 @@ export function IssuesView({
   const text = (localText || search || '').trim();
 
   const scopeFiltered = useMemo(
-    () => filterIssues(allIssues, { entity, entityMode: effectiveMode }),
-    [allIssues, entity, effectiveMode]
+    () => filterIssues(allIssues, { entity, entityMode: effectiveMode, session }),
+    [allIssues, entity, effectiveMode, session]
   );
 
   const visible = useMemo(
@@ -55,8 +55,9 @@ export function IssuesView({
         text,
         entity,
         entityMode: effectiveMode,
+        session,
       }),
-    [allIssues, scopes, severities, confidences, text, entity, effectiveMode]
+    [allIssues, scopes, severities, confidences, text, entity, effectiveMode, session]
   );
 
   const sevCounts = useMemo(() => countBy(scopeFiltered, (i) => i.severity), [scopeFiltered]);
@@ -67,7 +68,7 @@ export function IssuesView({
     set(list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
   };
 
-  if (!session.status.prebidPresent && !session.status.gptPresent) {
+  if (!allIssues.length && !session.status.prebidPresent && !session.status.gptPresent) {
     return <EmptyState title="No issues to analyze yet." hint="Reload the page with the panel open so BidShitter can observe the lifecycle." />;
   }
 
@@ -214,7 +215,11 @@ function IssueRow({ issue }: { issue: DiagnosticIssue }) {
         {open && (
           <div className="space-y-3 border-t border-border px-3 py-2 text-[11px]">
             <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">Explanation</div>
+              <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">Signal</div>
+              <p className="text-foreground/90">{issue.signal}</p>
+            </div>
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">Why it happens</div>
               <p className="text-foreground/90">{issue.explanation}</p>
             </div>
 
@@ -237,7 +242,7 @@ function IssueRow({ issue }: { issue: DiagnosticIssue }) {
 
             <div className="grid gap-3 md:grid-cols-2">
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">What to check</div>
+                <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">Check</div>
                 <ul className="list-disc space-y-0.5 pl-4 text-foreground/90">
                   {issue.checks.map((c, i) => (
                     <li key={i}>{c}</li>
@@ -245,7 +250,7 @@ function IssueRow({ issue }: { issue: DiagnosticIssue }) {
                 </ul>
               </div>
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">Recommended action</div>
+                <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">Do</div>
                 <ul className="list-disc space-y-0.5 pl-4 text-foreground/90">
                   {issue.recommendations.map((r, i) => (
                     <li key={i}>{r}</li>

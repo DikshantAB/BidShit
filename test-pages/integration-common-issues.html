@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BidShitter — Common Prebid + GPT integration issue reproductions</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #0b1020;
+        color: #e8ecf8;
+      }
+
+      main {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0 64px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin-top: 0;
+      }
+
+      .lead {
+        max-width: 900px;
+        color: #b8c1d9;
+        line-height: 1.55;
+      }
+
+      .notice,
+      .active,
+      .console,
+      .slots {
+        border: 1px solid #2b3551;
+        border-radius: 12px;
+        background: #121a2f;
+        padding: 16px;
+      }
+
+      .notice,
+      .active {
+        margin: 20px 0;
+      }
+
+      .notice strong,
+      .active strong {
+        color: #9fc3ff;
+      }
+
+      .issue-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+        gap: 12px;
+        margin: 20px 0;
+      }
+
+      button {
+        min-height: 92px;
+        border: 1px solid #344263;
+        border-radius: 10px;
+        padding: 13px;
+        background: #17213a;
+        color: inherit;
+        cursor: pointer;
+        text-align: left;
+        transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+      }
+
+      button:hover,
+      button:focus-visible {
+        border-color: #76a7ff;
+        background: #1d2b4c;
+        outline: none;
+        transform: translateY(-1px);
+      }
+
+      button.selected {
+        border-color: #76a7ff;
+        box-shadow: 0 0 0 2px rgb(118 167 255 / 22%);
+      }
+
+      button code {
+        display: block;
+        margin-bottom: 7px;
+        color: #9fc3ff;
+        font-weight: 700;
+      }
+
+      button span {
+        color: #d7ddef;
+        line-height: 1.35;
+      }
+
+      .active {
+        border-color: #486594;
+      }
+
+      .active[data-state="idle"] {
+        display: none;
+      }
+
+      .active p:last-child {
+        margin-bottom: 0;
+      }
+
+      .pill {
+        display: inline-block;
+        margin-left: 8px;
+        border-radius: 999px;
+        background: #26375d;
+        padding: 3px 9px;
+        color: #cfe0ff;
+        font-size: 12px;
+        vertical-align: middle;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 18px 0;
+      }
+
+      .actions button {
+        min-height: auto;
+        width: auto;
+      }
+
+      .console {
+        min-height: 220px;
+        max-height: 480px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #c8d2e9;
+        font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .slots {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 18px;
+        min-height: 280px;
+      }
+
+      .slot-shell {
+        min-width: 300px;
+      }
+
+      .slot-shell code {
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .slot-target {
+        width: 300px;
+        min-height: 250px;
+        border: 1px dashed #607095;
+        background: #fff;
+        color: #17213a;
+      }
+
+      code {
+        color: #b8d2ff;
+      }
+    </style>
+    <script>
+      "use strict";
+
+      const PREBID_CDN = "https://cdn.jsdelivr.net/npm/prebid.js@latest/dist/not-for-prod/prebid.js";
+      const GPT_CDN = "https://securepubads.g.doubleclick.net/tag/js/gpt.js";
+      const SAMPLE_GAM_PATH = "/6355419/Travel/Europe/France/Paris";
+      const MOCK_BIDDER = "bidshitterintegration";
+      const AUCTION_TIMEOUT = 900;
+      const issueId = new URLSearchParams(location.search).get("issue");
+
+      window.pbjs = window.pbjs || {};
+      window.pbjs.que = window.pbjs.que || [];
+      window.pbjs.cmd = window.pbjs.cmd || window.pbjs.que;
+      window.googletag = window.googletag || { cmd: [] };
+      window.googletag.cmd = window.googletag.cmd || [];
+
+      const issueDefinitions = [
+        {
+          id: "COMMON-INT-01",
+          title: "GAM refresh occurs before Prebid auction completion",
+          expected: "A delayed mock bid keeps the auction active for 600 ms while GPT refreshes the matched slot after 100 ms, between auctionInit and auctionEnd."
+        },
+        {
+          id: "COMMON-INT-02",
+          title: "Targeting is generated before auction completion",
+          expected: "A delayed mock bid keeps the auction active while setTargetingForGPTAsync is deliberately called 100 ms after auctionInit and before auctionEnd."
+        },
+        {
+          id: "COMMON-INT-03",
+          title: "Auction completes but targeting is never applied",
+          expected: "The auction completes with an eligible mock bid, but its callback skips setTargetingForGPTAsync and immediately refreshes GPT."
+        },
+        {
+          id: "COMMON-INT-04",
+          title: "Targeting is applied after refresh",
+          expected: "The completed auction refreshes GPT first, then waits 250 ms before applying Prebid targeting. The first GAM request snapshot should contain no hb_* keys."
+        },
+        {
+          id: "COMMON-INT-05",
+          title: "Prebid and GPT slot identifiers do not match",
+          expected: "The Prebid code matches neither the GPT element ID nor its GAM ad-unit path, and no custom slot matcher is configured."
+        },
+        {
+          id: "COMMON-INT-06",
+          title: "GPT slot is missing at handoff",
+          expected: "Prebid produces a valid bid and attempts GPT targeting while PubAds has no defined slots."
+        },
+        {
+          id: "COMMON-INT-07",
+          title: "Targeting is empty despite eligible bids",
+          expected: "A valid mock bid reaches auctionEnd, but bidTargetingExclusion deliberately excludes every bid before targeting is generated."
+        },
+        {
+          id: "COMMON-INT-08",
+          title: "Required hb_* key is not applied to GPT",
+          expected: "Prebid generates normal targeting, then hb_adid is deliberately cleared from the matched GPT slot before refresh."
+        },
+        {
+          id: "COMMON-INT-09",
+          title: "Stale targeting from an earlier auction is reused",
+          expected: "Auction one writes valid hb_* targeting. Auction two returns no bid, skips a new targeting handoff, and refreshes GPT with auction one's hb_adid still present."
+        },
+        {
+          id: "COMMON-INT-10",
+          title: "Prebid and GPT sizes disagree",
+          expected: "Prebid wins a 300x250 banner, while the matched GPT slot is declared as 728x90. Request-time hb_size should not be in the GPT size set."
+        },
+        {
+          id: "COMMON-INT-11",
+          title: "Failsafe and auction callback both request GAM",
+          expected: "The auction callback applies targeting and refreshes; an intentionally unguarded failsafe refreshes the same slot again 350 ms later."
+        },
+        {
+          id: "COMMON-INT-12",
+          title: "New auction starts before the prior GPT cycle finishes",
+          expected: "The first auction refreshes GPT and immediately starts a second auction for the same slot before slotRenderEnded can complete the first cycle."
+        }
+      ];
+
+      const PREBID_EVENTS = [
+        "requestBids",
+        "beforeRequestBids",
+        "auctionInit",
+        "bidRequested",
+        "bidResponse",
+        "noBid",
+        "bidTimeout",
+        "auctionTimeout",
+        "bidRejected",
+        "bidderDone",
+        "bidderError",
+        "auctionEnd",
+        "setTargeting",
+        "bidWon",
+        "adRenderSucceeded",
+        "adRenderFailed"
+      ];
+
+      const GPT_EVENTS = [
+        "slotRequested",
+        "slotResponseReceived",
+        "slotRenderEnded",
+        "slotOnload",
+        "impressionViewable",
+        "slotVisibilityChanged"
+      ];
+
+      let logElement;
+      let prebidReady = false;
+      let gptReady = false;
+      let scenarioStarted = false;
+
+      function safeJson(value) {
+        const seen = new WeakSet();
+        try {
+          return JSON.stringify(value, function (key, item) {
+            if (["ad", "adm", "vastXml", "vastUrl", "native"].includes(key)) return "[stripped]";
+            if (item && typeof item === "object") {
+              if (seen.has(item)) return "[circular]";
+              seen.add(item);
+            }
+            return item;
+          });
+        } catch (error) {
+          return String(value);
+        }
+      }
+
+      function log(message, data) {
+        const line = `[${new Date().toLocaleTimeString()}] ${message}${data === undefined ? "" : ` ${safeJson(data)}`}`;
+        console.log("[integration-repro]", message, data === undefined ? "" : data);
+        if (!logElement) return;
+        logElement.textContent += `${line}\n`;
+        logElement.scrollTop = logElement.scrollHeight;
+      }
+
+      function navigateToIssue(id) {
+        const url = new URL(location.href);
+        url.search = "";
+        url.searchParams.set("issue", id);
+        location.href = url.href;
+      }
+
+      function clearIssue() {
+        location.href = location.pathname;
+      }
+
+      function loadScript(src, label) {
+        const script = document.createElement("script");
+        script.async = true;
+        script.src = src;
+        script.addEventListener("load", function () {
+          log(`${label} script load event fired`);
+        });
+        script.addEventListener("error", function () {
+          log(`${label} script failed to load`, src);
+        });
+        document.head.appendChild(script);
+        log(`Requested ${label} script`, src);
+      }
+
+      function ensureSlotElement(id, width, height) {
+        let element = document.getElementById(id);
+        if (element) return element;
+        const shell = document.createElement("div");
+        const label = document.createElement("code");
+        element = document.createElement("div");
+        shell.className = "slot-shell";
+        label.textContent = id;
+        element.id = id;
+        element.className = "slot-target";
+        element.style.width = `${width || 300}px`;
+        element.style.minHeight = `${height || 250}px`;
+        shell.append(label, element);
+        document.getElementById("slot-stage").appendChild(shell);
+        return element;
+      }
+
+      function readSlotTargeting(slot) {
+        const targeting = {};
+        if (!slot) return targeting;
+        try {
+          const keys = slot.getTargetingKeys ? slot.getTargetingKeys() : [];
+          keys.forEach(function (key) {
+            targeting[key] = slot.getTargeting(key);
+          });
+        } catch (error) {
+          targeting.readError = String(error);
+        }
+        return targeting;
+      }
+
+      function describeSlot(slot) {
+        if (!slot) return null;
+        return {
+          elementId: slot.getSlotElementId && slot.getSlotElementId(),
+          adUnitPath: slot.getAdUnitPath && slot.getAdUnitPath(),
+          targeting: readSlotTargeting(slot)
+        };
+      }
+
+      function registerEventLoggers() {
+        PREBID_EVENTS.forEach(function (eventName) {
+          try {
+            pbjs.onEvent(eventName, function (payload) {
+              log(`Prebid event: ${eventName}`, payload);
+            });
+          } catch (error) {
+            log(`Could not subscribe to Prebid ${eventName}`, String(error));
+          }
+        });
+
+        const pubads = googletag.pubads();
+        GPT_EVENTS.forEach(function (eventName) {
+          try {
+            pubads.addEventListener(eventName, function (event) {
+              const data = {
+                slot: describeSlot(event.slot)
+              };
+              ["isEmpty", "size", "lineItemId", "creativeId", "responseIdentifier", "inViewPercentage"].forEach(function (key) {
+                if (event[key] !== undefined) data[key] = event[key];
+              });
+              log(`GPT event: ${eventName}`, data);
+            });
+          } catch (error) {
+            log(`Could not subscribe to GPT ${eventName}`, String(error));
+          }
+        });
+      }
+
+      function installMockBidder() {
+        pbjs.registerBidAdapter(null, MOCK_BIDDER, {
+          supportedMediaTypes: ["banner"],
+          isBidRequestValid: function () {
+            return true;
+          }
+        });
+      }
+
+      function mockBid(overrides) {
+        return Object.assign(
+          {
+            cpm: 2.5,
+            currency: "USD",
+            ttl: 300,
+            creativeId: "bidshitter-integration-creative",
+            netRevenue: true,
+            width: 300,
+            height: 250,
+            ad: "<div style='width:300px;height:250px;background:#dce8ff;color:#102044;display:grid;place-items:center;font:20px sans-serif'>BidShitter integration bid</div>",
+            meta: { advertiserDomains: ["example.test"] }
+          },
+          overrides || {}
+        );
+      }
+
+      function setMockOutcome(thenValue, delay) {
+        pbjs.setConfig({
+          debugging: {
+            enabled: true,
+            intercept: [
+              {
+                when: { bidder: MOCK_BIDDER },
+                then: thenValue,
+                options: { delay: delay || 0 }
+              }
+            ]
+          }
+        });
+      }
+
+      function makeAdUnit(code, sizes) {
+        return {
+          code: code,
+          mediaTypes: {
+            banner: {
+              sizes: sizes || [[300, 250]]
+            }
+          },
+          bids: [{ bidder: MOCK_BIDDER, params: {} }]
+        };
+      }
+
+      function defineSlot(code, sizes, path) {
+        const firstSize = Array.isArray(sizes[0]) ? sizes[0] : sizes;
+        ensureSlotElement(code, firstSize[0], firstSize[1]);
+        const slot = googletag.defineSlot(path || SAMPLE_GAM_PATH, sizes, code);
+        if (slot) slot.addService(googletag.pubads());
+        log("Defined GPT slot", describeSlot(slot));
+        return slot;
+      }
+
+      function prepareGptSlot(code, sizes, path) {
+        googletag.setConfig({ disableInitialLoad: true });
+        const slot = defineSlot(code, sizes || [[300, 250]], path);
+        googletag.enableServices();
+        googletag.display(code);
+        log("Displayed GPT slot with initial load disabled", describeSlot(slot));
+        return slot;
+      }
+
+      function requestAuction(code, callback, timeout) {
+        pbjs.requestBids({
+          adUnitCodes: [code],
+          timeout: timeout || AUCTION_TIMEOUT,
+          bidsBackHandler: function (bids, timedOut, auctionId) {
+            log("bidsBackHandler", {
+              auctionId: auctionId,
+              timedOut: timedOut,
+              bidGroups: Object.keys(bids || {})
+            });
+            callback(bids, timedOut, auctionId);
+          }
+        });
+      }
+
+      function addNormalUnit(code, sizes) {
+        pbjs.addAdUnits(makeAdUnit(code, sizes));
+      }
+
+      function applyTargeting(code, slot) {
+        pbjs.setTargetingForGPTAsync([code]);
+        log("Applied Prebid targeting", {
+          code: code,
+          generated: pbjs.getAdserverTargetingForAdUnitCode(code),
+          slotTargeting: readSlotTargeting(slot)
+        });
+      }
+
+      function refreshSlot(slot, label) {
+        googletag.pubads().refresh([slot]);
+        log(label || "Refreshed GPT slot", describeSlot(slot));
+      }
+
+      function runScenario(id) {
+        registerEventLoggers();
+        installMockBidder();
+        setMockOutcome(mockBid());
+        log("Prebid and GPT are ready; starting scenario", {
+          issue: id,
+          prebidVersion: pbjs.version,
+          gptVersion: googletag.getVersion && googletag.getVersion()
+        });
+
+        switch (id) {
+          case "COMMON-INT-01": {
+            const code = "div-gpt-int-refresh-before-auction-end";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            addNormalUnit(code);
+            setMockOutcome(mockBid(), 600);
+            requestAuction(code, function (bids, timedOut, auctionId) {
+              log("Auction eventually completed after the early GAM refresh", { auctionId: auctionId });
+            });
+            window.setTimeout(function () {
+              refreshSlot(slot, "Refreshed matched GPT slot while Prebid auction was active");
+            }, 100);
+            break;
+          }
+
+          case "COMMON-INT-02": {
+            const code = "div-gpt-int-targeting-before-auction-end";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            addNormalUnit(code);
+            setMockOutcome(mockBid(), 600);
+            requestAuction(code, function (bids, timedOut, auctionId) {
+              log("Auction eventually completed after the early targeting call", { auctionId: auctionId });
+            });
+            window.setTimeout(function () {
+              applyTargeting(code, slot);
+              log("Deliberately generated targeting while auction was active");
+            }, 100);
+            break;
+          }
+
+          case "COMMON-INT-03": {
+            const code = "div-gpt-int-missing-targeting-handoff";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            addNormalUnit(code);
+            requestAuction(code, function () {
+              log("Eligible auction completed; deliberately skipping Prebid targeting");
+              refreshSlot(slot, "Requested GAM without applying auction targeting");
+            });
+            break;
+          }
+
+          case "COMMON-INT-04": {
+            const code = "div-gpt-int-targeting-after-refresh";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            addNormalUnit(code);
+            requestAuction(code, function () {
+              refreshSlot(slot, "Refreshed before applying Prebid targeting");
+              window.setTimeout(function () {
+                applyTargeting(code, slot);
+              }, 250);
+            });
+            break;
+          }
+
+          case "COMMON-INT-05": {
+            const prebidCode = "prebid-intentionally-mismatched-code";
+            const gptCode = "div-gpt-different-element-id";
+            const slot = prepareGptSlot(gptCode, [[300, 250]], SAMPLE_GAM_PATH);
+            addNormalUnit(prebidCode);
+            requestAuction(prebidCode, function () {
+              applyTargeting(prebidCode, slot);
+              refreshSlot(slot, "Refreshed differently named GPT slot");
+            });
+            break;
+          }
+
+          case "COMMON-INT-06": {
+            const code = "prebid-unit-with-no-gpt-slot";
+            googletag.setConfig({ disableInitialLoad: true });
+            googletag.enableServices();
+            addNormalUnit(code);
+            requestAuction(code, function () {
+              applyTargeting(code, null);
+              log("Targeting handoff completed with zero GPT slots", {
+                liveSlots: googletag.pubads().getSlots().length
+              });
+            });
+            break;
+          }
+
+          case "COMMON-INT-07": {
+            const code = "div-gpt-int-empty-targeting";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            pbjs.setConfig({
+              bidTargetingExclusion: function () {
+                return true;
+              }
+            });
+            addNormalUnit(code);
+            requestAuction(code, function () {
+              applyTargeting(code, slot);
+              refreshSlot(slot, "Refreshed after intentionally empty targeting handoff");
+            });
+            break;
+          }
+
+          case "COMMON-INT-08": {
+            const code = "div-gpt-int-missing-hb-adid";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            addNormalUnit(code);
+            requestAuction(code, function () {
+              applyTargeting(code, slot);
+              slot.clearTargeting("hb_adid");
+              log("Deliberately cleared required hb_adid before request", readSlotTargeting(slot));
+              refreshSlot(slot);
+            });
+            break;
+          }
+
+          case "COMMON-INT-09": {
+            const code = "div-gpt-int-stale-targeting";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            addNormalUnit(code);
+            requestAuction(code, function (firstBids, firstTimedOut, firstAuctionId) {
+              applyTargeting(code, slot);
+              const firstTargeting = readSlotTargeting(slot);
+              log("Stored auction-one targeting without requesting GAM", {
+                firstAuctionId: firstAuctionId,
+                targeting: firstTargeting
+              });
+              setMockOutcome(null);
+              requestAuction(code, function (secondBids, secondTimedOut, secondAuctionId) {
+                log("Auction two returned no bid; deliberately preserving auction-one targeting", {
+                  firstAuctionId: firstAuctionId,
+                  secondAuctionId: secondAuctionId,
+                  targeting: readSlotTargeting(slot)
+                });
+                refreshSlot(slot, "Refreshed with stale hb_* targeting");
+              });
+            });
+            break;
+          }
+
+          case "COMMON-INT-10": {
+            const code = "div-gpt-int-size-mismatch";
+            const slot = prepareGptSlot(code, [[728, 90]]);
+            addNormalUnit(code, [[300, 250]]);
+            requestAuction(code, function () {
+              applyTargeting(code, slot);
+              refreshSlot(slot, "Refreshed 728x90 GPT slot with 300x250 hb_size");
+            });
+            break;
+          }
+
+          case "COMMON-INT-11": {
+            const code = "div-gpt-int-double-refresh";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            addNormalUnit(code);
+            window.setTimeout(function () {
+              refreshSlot(slot, "Unguarded failsafe issued the second refresh");
+            }, 350);
+            requestAuction(code, function () {
+              applyTargeting(code, slot);
+              refreshSlot(slot, "Auction callback issued the first refresh");
+            });
+            break;
+          }
+
+          case "COMMON-INT-12": {
+            const code = "div-gpt-int-overlapping-cycle";
+            const slot = prepareGptSlot(code, [[300, 250]]);
+            addNormalUnit(code);
+            requestAuction(code, function (firstBids, firstTimedOut, firstAuctionId) {
+              applyTargeting(code, slot);
+              refreshSlot(slot, "First auction requested GAM");
+              setMockOutcome(mockBid({ cpm: 3.25 }), 100);
+              log("Starting second auction synchronously before first GPT render", {
+                firstAuctionId: firstAuctionId
+              });
+              requestAuction(code, function (secondBids, secondTimedOut, secondAuctionId) {
+                log("Second auction completed", {
+                  firstAuctionId: firstAuctionId,
+                  secondAuctionId: secondAuctionId
+                });
+              });
+            });
+            break;
+          }
+
+          default:
+            log("No matching scenario selected", id);
+        }
+      }
+
+      function maybeRunScenario() {
+        if (scenarioStarted || !prebidReady || !gptReady || !issueId) return;
+        scenarioStarted = true;
+        runScenario(issueId);
+      }
+
+      function renderUi() {
+        const selected = issueDefinitions.find(function (item) {
+          return item.id === issueId;
+        });
+        const grid = document.getElementById("issue-grid");
+        logElement = document.getElementById("event-log");
+
+        issueDefinitions.forEach(function (item) {
+          const button = document.createElement("button");
+          const code = document.createElement("code");
+          const title = document.createElement("span");
+          code.textContent = item.id;
+          title.textContent = item.title;
+          button.type = "button";
+          button.append(code, title);
+          button.classList.toggle("selected", item.id === issueId);
+          button.addEventListener("click", function () {
+            navigateToIssue(item.id);
+          });
+          grid.appendChild(button);
+        });
+
+        document.getElementById("repeat-scenario").addEventListener("click", function () {
+          location.reload();
+        });
+        document.getElementById("clear-scenario").addEventListener("click", clearIssue);
+
+        if (!selected) return;
+        const active = document.getElementById("active-scenario");
+        active.dataset.state = "active";
+        document.getElementById("active-id").textContent = selected.id;
+        document.getElementById("active-title").textContent = selected.title;
+        document.getElementById("active-expected").textContent = selected.expected;
+        log("Fresh page load selected scenario", selected.id);
+
+        pbjs.que.push(function () {
+          prebidReady = true;
+          log("Prebid queue is ready", { libLoaded: pbjs.libLoaded, version: pbjs.version });
+          maybeRunScenario();
+        });
+        googletag.cmd.push(function () {
+          gptReady = true;
+          log("GPT command queue is ready", { apiReady: googletag.apiReady });
+          maybeRunScenario();
+        });
+
+        loadScript(PREBID_CDN, "hosted Prebid");
+        loadScript(GPT_CDN, "official GPT");
+      }
+
+      window.addEventListener("DOMContentLoaded", renderUi);
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1>Common Prebid + GPT integration issue reproductions</h1>
+      <p class="lead">
+        Open BidShitter DevTools on this page, then select an issue. Every button reloads into one isolated integration scenario so the extension can correlate Prebid auctions, targeting handoffs, GPT slot state, and GAM requests from boot.
+      </p>
+      <p class="lead">
+        Hosted Prebid: <code>https://cdn.jsdelivr.net/npm/prebid.js@latest/dist/not-for-prod/prebid.js</code><br />
+        Official GPT: <code>https://securepubads.g.doubleclick.net/tag/js/gpt.js</code>
+      </p>
+
+      <div class="notice">
+        <strong>Testing workflow:</strong> keep DevTools open, click one scenario, wait for the auction and GPT lifecycle to settle, and compare the extension with the combined page-side event log. The mock bidder uses Prebid’s debugging interceptor, so no real bidder endpoint is contacted.
+      </div>
+
+      <section aria-labelledby="scenario-heading">
+        <h2 id="scenario-heading">Choose an isolated scenario</h2>
+        <div id="issue-grid" class="issue-grid"></div>
+      </section>
+
+      <section id="active-scenario" class="active" data-state="idle" aria-live="polite">
+        <h2>
+          <span id="active-id"></span>
+          <span class="pill">running</span>
+        </h2>
+        <p><strong id="active-title"></strong></p>
+        <p id="active-expected"></p>
+      </section>
+
+      <div class="actions">
+        <button id="repeat-scenario" type="button">Repeat selected scenario</button>
+        <button id="clear-scenario" type="button">Return to idle page</button>
+      </div>
+
+      <h2>Combined Prebid + GPT event log</h2>
+      <pre id="event-log" class="console">Select an issue to begin. The BidShitter panel remains the source of truth.&#10;</pre>
+
+      <h2>GPT slot stage</h2>
+      <div id="slot-stage" class="slots"></div>
+    </main>
+  </body>
+</html>

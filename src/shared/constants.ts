@@ -163,6 +163,7 @@ export const STRIP_KEYS = [
   'body',
   'consentString',
   'tcString',
+  'addtlConsent',
   'gppString',
   'uspString',
 ] as const;
@@ -170,7 +171,7 @@ export const STRIP_KEYS = [
 export const BUFFER_CAP = 5000;
 export const STRING_CAP = 2048;
 export const ARRAY_CAP = 500;
-export const DEPTH_CAP = 6;
+export const DEPTH_CAP = 10;
 export const BOOT_POLL_MS = 50;
 export const BOOT_POLL_TIMEOUT_MS = 10000;
 export const VISIBILITY_SAMPLE_MS = 500;

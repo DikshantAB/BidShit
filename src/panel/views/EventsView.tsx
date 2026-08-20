@@ -55,6 +55,7 @@ export function EventsView({ search, entity }: { search: string; entity: string 
           <option value="gpt">gpt</option>
           <option value="hook">hook</option>
           <option value="network">network</option>
+          <option value="cmp">cmp</option>
         </Select>
         <MultiSelect options={namesOptions} selected={names} onChange={setNames} allLabel="all events" />
         <div className="w-56">
